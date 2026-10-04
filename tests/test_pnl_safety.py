@@ -224,3 +224,25 @@ def test_stop_filter_failure_reason_is_logged_and_sync_message_honest():
     assert any("borsa stop emri konamadı" in l.message and "minPrice" in l.message
                for l in db.recent_logs(20))
     assert db.get_trade(t.id).stop_order_id is None
+
+
+def test_exchange_stop_not_churned_for_tiny_moves():
+    engine, fake, db = live_engine()
+    engine.run_cycle(force_scan=True)
+    t = db.open_trades("LIVE")[0]
+    atr = t.current_atr
+    fake.override_price[t.symbol] = t.entry_price + 4 * atr  # trailing aktif, stop yükselir
+    engine.run_cycle()
+    t1 = db.get_trade(t.id)
+    stops_after_move = sum(1 for c in fake.calls if c[0] == "STOP")
+    # fiyat çok az yükselir: yazılım stopu yükselir ama borsa emri yenilenmez
+    fake.override_price[t.symbol] = (t.entry_price + 4 * atr) * 1.0002
+    engine.run_cycle()
+    t2 = db.get_trade(t.id)
+    assert t2.stop_price > t1.stop_price
+    assert t2.stop_order_id == t1.stop_order_id
+    assert sum(1 for c in fake.calls if c[0] == "STOP") == stops_after_move
+    # anlamlı yükselişte yenilenir
+    fake.override_price[t.symbol] = (t.entry_price + 4 * atr) * 1.02
+    engine.run_cycle()
+    assert db.get_trade(t.id).stop_order_id != t1.stop_order_id

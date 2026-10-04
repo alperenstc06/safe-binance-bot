@@ -675,7 +675,7 @@ class BotEngine:
             self.db.save_trade(t)
             return
 
-        if upd.changed and self.s.is_live and t.stop_order_id:
+        if upd.changed and self.s.is_live and t.stop_order_id and self._stop_move_worthwhile(t, filters):
             filled = self.orders.cancel_stop(t.symbol, t.stop_order_id, t.base_asset)
             t.stop_order_id, t.stop_order_price = None, None
             if filled is not None and self._apply_fill(t, filled, "STOP_LOSS_EXCHANGE", filters):
@@ -771,6 +771,21 @@ class BotEngine:
                                        f"kalan={t.quantity:.8g}")
         if self.snapshot is not None:
             self._update_daily(utcnow(), self.snapshot.equity_quote)
+
+    def _stop_move_worthwhile(self, t: Trade, filters) -> bool:
+        """Borsa stopunu yalnızca yuvarlanmış fiyat anlamlı ölçüde yükseliyorsa yenile.
+
+        Her küçük yükselişte iptal/yeniden koyma gereksiz emir trafiği ve kısa korumasız anlar
+        yaratır. Yazılım stopu her zaman kesin seviyeyi (t.stop_price) kullanır.
+        """
+        new_px = float(filters.round_price(t.stop_price))
+        old_px = t.stop_order_price or 0.0
+        if old_px <= 0:
+            return True
+        if new_px <= old_px:
+            return False
+        moved_to_breakeven = old_px < t.entry_price <= new_px
+        return moved_to_breakeven or (new_px - old_px) / old_px >= self.s.min_stop_update_pct
 
     def unrealized_pnl(self, t: Trade) -> float:
         price = self.prices.get(t.symbol, t.entry_price)

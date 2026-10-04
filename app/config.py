@@ -131,6 +131,8 @@ class Settings(BaseSettings):
     # --- Emir güvenliği ---
     place_exchange_stop: bool = True
     stop_limit_offset_pct: float = 0.005
+    # Borsa stopu en az bu oranda yükselmedikçe iptal/yeniden konmaz (gereksiz emir trafiğini önler)
+    min_stop_update_pct: float = 0.002
 
     # --- Telefondan takip (Telegram) ---
     telegram_bot_token: SecretStr = SecretStr("")
