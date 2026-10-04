@@ -132,11 +132,17 @@ class Settings(BaseSettings):
     place_exchange_stop: bool = True
     stop_limit_offset_pct: float = 0.005
 
+    # --- Telefondan takip (Telegram) ---
+    telegram_bot_token: SecretStr = SecretStr("")
+    telegram_chat_id: str = ""
+    telegram_commands_enabled: bool = True
+
     # --- Panel / veritabanı ---
     database_url: str = "sqlite:///./data/bot.db"
     panel_host: str = "127.0.0.1"
     panel_port: int = 8000
     panel_token: SecretStr = SecretStr("")
+    panel_insecure_ok: bool = False  # yalnızca Docker'da port 127.0.0.1'e bağlıyken
     log_dir: str = "logs"
     log_level: str = "INFO"
 
@@ -183,6 +189,9 @@ class Settings(BaseSettings):
         # TL piyasasının hacmi USDT piyasasından çok düşüktür: TR için varsayılan eşik 1M USDT
         if self.is_tr and "min_quote_volume_usdt" not in self.model_fields_set:
             self.min_quote_volume_usdt = 1_000_000.0
+        if (self.panel_host not in ("127.0.0.1", "localhost", "::1")
+                and not self.panel_token.get_secret_value().strip() and not self.panel_insecure_ok):
+            raise ValueError("Panel ağa açılıyorsa (PANEL_HOST=0.0.0.0) PANEL_TOKEN tanımlanmalı")
         if self.trading_mode == TradingMode.LIVE and not self.has_trading_keys:
             names = ("BINANCE_TR_API_KEY ve BINANCE_TR_API_SECRET" if self.is_tr
                      else "BINANCE_API_KEY ve BINANCE_API_SECRET")

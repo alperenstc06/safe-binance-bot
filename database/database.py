@@ -48,6 +48,8 @@ class Database:
         self.engine: Engine = create_engine(url, **kwargs)
         self._session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         Base.metadata.create_all(self.engine)
+        # Karar günlüğü dinleyicisi (ör. Telegram bildirimleri): listener(kategori, mesaj, seviye)
+        self.listener = None
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -83,6 +85,11 @@ class Database:
         log_fn("[%s] %s", category, message)
         with self.session() as s:
             s.add(DecisionLog(category=category, message=message, data=data, level=level))
+        if self.listener is not None:
+            try:
+                self.listener(category, message, level)
+            except Exception:  # bildirim hatası botu etkilememeli
+                logger.exception("Karar günlüğü dinleyicisi hatası")
 
     def recent_logs(self, limit: int = 50) -> list[DecisionLog]:
         with self.session() as s:

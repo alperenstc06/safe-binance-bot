@@ -17,7 +17,7 @@ emin olmadığın Binance API ayrıntılarını uydurma, belirsizse bana söyle.
 - Dil: Python 3.12, Windows 10/11 üzerinde PowerShell + venv ile çalışıyor.
 - Çalıştırma: `.venv\Scripts\activate` sonra `python -m app.main`; panel http://127.0.0.1:8000
 - Güncelleme: `git pull` sonra botu yeniden başlatmak. Testler: `pytest -q` (ağ gerektirmez,
-  sahte Binance istemcileri kullanır; şu an 93 test geçiyor).
+  sahte Binance istemcileri kullanır; şu an 108 test geçiyor).
 - Bağımlılıklar: binance-connector (resmi Binance Spot SDK), FastAPI, uvicorn, SQLAlchemy 2,
   pydantic-settings, requests. Veritabanı: SQLite (data/bot.db).
 
@@ -85,6 +85,14 @@ emin olmadığın Binance API ayrıntılarını uydurma, belirsizse bana söyle.
 - bot/order_manager.py: DRY_RUN'da emirleri simüle eder (ask/bid + slippage + komisyon);
   LIVE'da market alım/satım ve borsa tarafı STOP_LOSS_LIMIT. parse_market_fill() komisyonu
   quote/baz/harici (BNB) olarak ayırır.
+- bot/notifier.py: Telegram bildirimleri (Database.listener ile karar günlüğünü dinler) ve
+  komutlar (/durum, /pozisyon, /acil EVET); yalnızca TELEGRAM_CHAT_ID'den komut kabul eder.
+- Kâr yönetimi (engine): 1,5R'de pozisyonun yarısı satılır (ayrı CLOSED kayıt,
+  exit_reason=PARTIAL_TAKE_PROFIT, BotStateKV'de "partial_tp_done:<id>"); kâr 2R'yi geçince
+  trailing 1,2 ATR'ye daralır.
+- İğne önlemleri: strategy.wick_stats() ile sık/uzun iğneli coinler elenir; risk_manager.
+  wick_aware_stop() ilk stopu yakın dibin altına koyar (en fazla 3 ATR); _open_position emir
+  anında spread ve fiyat sapmasını tekrar kontrol eder.
 - bot/portfolio_manager.py: Hesap değerleme, HOLD/PARTIAL_SELL/SELL önerileri (mevcut varlıklar
   varsayılan olarak SATILMAZ; MANAGE_EXISTING_HOLDINGS=false).
 - database/models.py, database/database.py: Trade, Signal, DecisionLog, BotStateKV, DailyStat,

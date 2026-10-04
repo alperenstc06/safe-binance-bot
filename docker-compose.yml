@@ -8,6 +8,8 @@ services:
     environment:
       PANEL_HOST: 0.0.0.0
       PANEL_PORT: 8000
+      # Port aşağıda yalnızca 127.0.0.1'e açıldığı için konteyner içinde token zorunlu değil
+      PANEL_INSECURE_OK: "true"
     # Panel yalnızca bu bilgisayardan erişilebilir (127.0.0.1)
     ports:
       - "127.0.0.1:8000:8000"

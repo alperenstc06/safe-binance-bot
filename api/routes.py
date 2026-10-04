@@ -24,7 +24,7 @@ def get_engine(request: Request) -> BotEngine:
 
 
 def require_token(request: Request, x_panel_token: str | None = Header(default=None)) -> None:
-    """PANEL_TOKEN tanımlıysa tüm kontrol (POST) işlemleri için zorunludur."""
+    """PANEL_TOKEN tanımlıysa tüm /api uç noktaları (okuma dahil) için zorunludur."""
     expected = request.app.state.settings.panel_token.get_secret_value()
     if expected and not hmac.compare_digest(expected, x_panel_token or ""):
         raise HTTPException(status_code=401, detail="Geçersiz panel anahtarı")
@@ -47,17 +47,17 @@ def health() -> dict:
     return {"ok": True}
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_token)])
 def status(engine: BotEngine = Depends(get_engine)) -> dict:
     return engine.status()
 
 
-@router.get("/trades")
+@router.get("/trades", dependencies=[Depends(require_token)])
 def trades(limit: int = 50, engine: BotEngine = Depends(get_engine)) -> list[dict]:
     return [_trade_dict(t) for t in engine.db.recent_trades(min(limit, 500), mode=engine.book)]
 
 
-@router.get("/signals")
+@router.get("/signals", dependencies=[Depends(require_token)])
 def signals(limit: int = 15, engine: BotEngine = Depends(get_engine)) -> list[dict]:
     scan = engine.last_scan
     if scan is not None:  # bu oturumdaki son tarama (eski kayıtlar karışmasın)
@@ -75,7 +75,7 @@ def signals(limit: int = 15, engine: BotEngine = Depends(get_engine)) -> list[di
     ]
 
 
-@router.get("/logs")
+@router.get("/logs", dependencies=[Depends(require_token)])
 def logs(limit: int = 50, engine: BotEngine = Depends(get_engine)) -> list[dict]:
     return [
         {"time": l.created_at.isoformat(), "level": l.level, "category": l.category,
@@ -84,7 +84,7 @@ def logs(limit: int = 50, engine: BotEngine = Depends(get_engine)) -> list[dict]
     ]
 
 
-@router.get("/daily-stats")
+@router.get("/daily-stats", dependencies=[Depends(require_token)])
 def daily_stats(engine: BotEngine = Depends(get_engine)) -> list[dict]:
     return [
         {"day": d.day, "start_equity": d.start_equity, "end_equity": d.end_equity,

@@ -183,6 +183,39 @@ Açık pozisyonlar SQLite'ta saklanır. Bot yeniden başladığında:
 - Varlık hesapta yoksa (elle satılmışsa) harici kapanış olarak işlenir.
 - Miktar azalmışsa güncellenir; eksik stop emri yeniden konur.
 
+## Kâr yönetimi ve iğne önlemleri
+
+- **Kısmi kâr:** fiyat giriş + 1,5R olunca (R = giriş − ilk stop) pozisyonun yarısı satılır, kalan
+  yarı trailing stop ile devam eder (`PARTIAL_TP_R_MULTIPLE`, `PARTIAL_TP_FRACTION`).
+- **Daralan trailing:** kâr 2R'yi geçince trailing stop zirvenin 2 ATR yerine 1,2 ATR altına yaklaşır.
+- **İğne filtresi:** son 48 mumda 3'ten fazla uzun iğne (≥1,5 ATR) veya 3 ATR'den uzun tek iğne
+  atan coinlere girilmez.
+- **İğneye dayanıklı stop:** ilk stop yakın zamandaki dip/iğne seviyesinin biraz altına konur
+  (en fazla 3 ATR). Risk sabit kaldığı için pozisyon boyutu buna göre küçülür.
+- **Emir anı kontrolü:** alımdan hemen önce spread ve fiyat yeniden kontrol edilir; spread
+  açıldıysa veya fiyat taramadan sonra %1'den fazla oynadıysa alım yapılmaz.
+- Borsadaki stop-limit emri kısa bir iğnede dolmazsa bot fiyatı 30 sn'de bir izler; fiyat stopun
+  altında kalıcı olarak kalırsa piyasa fiyatından satar.
+
+## Telefondan takip
+
+### 1) Telegram (her yerden, önerilen)
+1. Telegram'da **@BotFather**'a `/newbot` yazın, bir isim verin; size bir **token** verir.
+2. `.env` dosyasına `TELEGRAM_BOT_TOKEN=...` yazıp botu yeniden başlatın.
+3. Telegram'da kendi botunuza herhangi bir mesaj yazın; size **sohbet numaranızı** yanıtlar.
+4. `.env` dosyasına `TELEGRAM_CHAT_ID=...` yazıp botu yeniden başlatın.
+
+Bildirimler: alım, satış, kısmi kâr, stopun başa başa çekilmesi, güvenlik uyarıları, hatalar.
+Komutlar: `/durum`, `/pozisyon`, `/acil EVET` (acil durdurma), `/yardim`. Komutlar yalnızca
+`TELEGRAM_CHAT_ID`'deki sohbetten kabul edilir.
+
+### 2) Panel, aynı Wi-Fi ağından
+`.env` içine `PANEL_HOST=0.0.0.0` ve güçlü bir `PANEL_TOKEN=...` yazın (token zorunlu), botu yeniden
+başlatın. Telefondan `http://BILGISAYAR_IP:8000` adresini açıp panel anahtarı kutusuna token'ı
+girin. Bilgisayarın IP'sini PowerShell'de `ipconfig` ile ("IPv4 Address") öğrenebilirsiniz.
+Windows güvenlik duvarı izin isterse "Özel ağlar" için izin verin. Paneli internete (modemden port
+yönlendirme ile) açmayın.
+
 ## Web panel
 
 **http://127.0.0.1:8000** (Docker'da da aynı adres)

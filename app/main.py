@@ -18,6 +18,7 @@ from api.routes import router
 from app.config import Settings, get_settings
 from binance_client.client import build_clients
 from bot.engine import BotEngine
+from bot.notifier import build_notifier
 from database.database import Database
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -53,6 +54,11 @@ def create_app(settings: Settings | None = None, client=None, db: Database | Non
         accounts = accounts or built_accounts
     db = db or Database(settings.database_url)
     engine = BotEngine(settings, client, db, accounts=accounts)
+    notifier = build_notifier(settings)
+    if notifier is not None:
+        notifier.status_provider = engine.status
+        notifier.emergency_handler = engine.emergency_stop
+        db.listener = notifier.on_log
 
     should_autostart = settings.auto_start if autostart is None else autostart
     if settings.is_live and not settings.allow_live_auto_start:
@@ -64,6 +70,14 @@ def create_app(settings: Settings | None = None, client=None, db: Database | Non
         logger.warning("Bot modu: %s, borsa: %s%s", mode, settings.trading_exchange.value,
                        " (GERÇEK EMİRLER!)" if settings.is_live else
                        " (simülasyon, gerçek emir gönderilmez)")
+        if notifier is not None:
+            notifier.start()
+            if notifier.chat_id:
+                notifier.notify(f"🤖 Bot uygulaması açıldı ({mode}, {settings.trading_exchange.value}). "
+                                f"Komutlar için /yardim yazın.")
+            else:
+                logger.warning("TELEGRAM_CHAT_ID boş: Telegram'da bota bir mesaj yazın, "
+                               "sohbet numaranız yanıt olarak gelecek.")
         if should_autostart:
             try:
                 engine.start()
@@ -73,10 +87,15 @@ def create_app(settings: Settings | None = None, client=None, db: Database | Non
         yield
         if engine.running:
             engine.stop("Uygulama kapanıyor")
+        if notifier is not None:
+            notifier.send_now("🛑 Bot uygulaması kapandı. Açık pozisyonların borsadaki stop "
+                              "emirleri korunuyor.")
+            notifier.stop()
 
     app = FastAPI(title="Safe Binance Spot Bot", version="1.0.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.engine = engine
+    app.state.notifier = notifier
     app.include_router(router)
 
     @app.get("/", include_in_schema=False)
