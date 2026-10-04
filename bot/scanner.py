@@ -82,7 +82,9 @@ class MarketScanner:
         return out
 
     @staticmethod
-    def market_data(tickers: list[dict], books: dict[str, dict]) -> dict[str, tuple[float, float]]:
+    def market_data(tickers: list[dict], books: dict[str, dict],
+                    fx: float = 1.0) -> dict[str, tuple[float, float]]:
+        """sembol -> (24s hacmin USDT karşılığı, spread)."""
         out: dict[str, tuple[float, float]] = {}
         for t in tickers:
             sym = t.get("symbol")
@@ -91,11 +93,11 @@ class MarketScanner:
                 continue
             bid, ask = float(book.get("bidPrice", 0)), float(book.get("askPrice", 0))
             if bid > 0 and ask > 0:
-                out[sym] = (float(t.get("quoteVolume", 0) or 0), (ask - bid) / ((ask + bid) / 2))
+                out[sym] = (float(t.get("quoteVolume", 0) or 0) / fx, (ask - bid) / ((ask + bid) / 2))
         return out
 
-    def prefilter(self, tickers: list[dict], books: dict[str, dict],
-                  universe: dict[str, dict]) -> tuple[list[tuple[str, float, float]], dict[str, str]]:
+    def prefilter(self, tickers: list[dict], books: dict[str, dict], universe: dict[str, dict],
+                  fx: float = 1.0) -> tuple[list[tuple[str, float, float]], dict[str, str]]:
         """Hacim, spread ve 24s değişim ön elemesi. (sembol, hacim, spread) listesi döner."""
         rejected: dict[str, str] = {}
         passed: list[tuple[str, float, float]] = []
@@ -103,7 +105,7 @@ class MarketScanner:
             sym = t.get("symbol")
             if sym not in universe:
                 continue
-            qv = float(t.get("quoteVolume", 0) or 0)
+            qv = float(t.get("quoteVolume", 0) or 0) / fx  # USDT karşılığı
             change = float(t.get("priceChangePercent", 0) or 0)
             if qv < self.s.min_quote_volume_usdt:
                 rejected[sym] = "Düşük hacim"
@@ -147,14 +149,14 @@ class MarketScanner:
         )
 
     def scan(self, regime: str, tickers: list[dict] | None = None,
-             books: dict[str, dict] | None = None) -> ScanResult:
+             books: dict[str, dict] | None = None, fx: float = 1.0) -> ScanResult:
         result = ScanResult(scan_id=str(int(time.time() * 1000)))
         universe = self.tradable_symbols()
         result.universe_size = len(universe)
         tickers = tickers if tickers is not None else self.client.ticker_24h_all()
         books = books if books is not None else self.client.book_tickers()
-        result.market = self.market_data(tickers, books)
-        candidates, rejected = self.prefilter(tickers, books, universe)
+        result.market = self.market_data(tickers, books, fx)
+        candidates, rejected = self.prefilter(tickers, books, universe, fx)
         result.rejected.update(rejected)
         for sym, qv, spread in candidates:
             try:

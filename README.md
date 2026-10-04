@@ -72,8 +72,13 @@ Bot iki borsayı destekler: **Binance Global** (binance.com) ve **Binance TR** (
   BINANCE_TR_API_KEY=...
   BINANCE_TR_API_SECRET=...
   ```
-- Binance TR'de yalnızca emir defteri Binance ile ortak olan ("type 1") USDT pariteleri işlenir.
-  Bu paritelerin fiyat/mum/defter verisi Binance'in herkese açık Spot API'sinden okunur.
+- Binance TR'de pariteler **TL (TRY)** bazlıdır (BTC_TRY, ETH_TRY ...). TR seçildiğinde bot
+  otomatik olarak TRY paritelerinde işlem yapar (`QUOTE_ASSET=TRY`); alımlar **serbest TL
+  bakiyesiyle** yapılır. USDT'niz varsa önce TL'ye çevirmeniz gerekir.
+- Risk hesapları (pozisyon boyutu, günlük zarar, PNL) TL cinsinden yapılır; toplam portföy panelde
+  USDT karşılığıyla da gösterilir. Hacim filtresi USDT/TRY kuruyla USDT'ye çevrilerek uygulanır.
+- Yalnızca emir defteri Binance ile ortak olan ("type 1") pariteler işlenir; bunların fiyat/mum/defter
+  verisi Binance'in herkese açık Spot API'sinden okunur.
 - Binance TR API'si anahtar yetkilerini sorgulamaya izin vermez. **Para çekme yetkisinin kapalı
   olduğunu Binance TR API ayarlarından kendiniz kontrol edin**; bot başlarken bunu hatırlatır.
 - Her borsanın işlem geçmişi, günlük istatistikleri ve DRY_RUN kağıt bakiyesi ayrı tutulur.

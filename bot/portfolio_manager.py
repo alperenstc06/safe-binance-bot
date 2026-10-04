@@ -36,12 +36,27 @@ class PortfolioSnapshot:
     usdt_total: float
     assets: list[AssetValue] = field(default_factory=list)
     source: str = "paper"
+    quote_asset: str = "USDT"
+    fx: float = 1.0  # 1 USDT kaç birim işlem para birimi (ör. USDTTRY)
+    quote_free: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.quote_free is None:
+            self.quote_free = self.usdt_free
+
+    @property
+    def equity_quote(self) -> float:
+        """Özsermayenin işlem para birimi (USDT veya TRY) karşılığı."""
+        return self.equity_usdt * self.fx
 
     def to_dict(self) -> dict:
         return {
             "equity_usdt": round(self.equity_usdt, 4),
             "usdt_free": round(self.usdt_free, 4),
             "usdt_total": round(self.usdt_total, 4),
+            "quote_asset": self.quote_asset,
+            "quote_free": round(self.quote_free or 0.0, 4),
+            "equity_quote": round(self.equity_quote, 4),
             "source": self.source,
             "assets": [asdict(a) for a in self.assets],
         }
@@ -75,7 +90,8 @@ def asset_price_usdt(asset: str, prices: dict[str, float]) -> float:
     return 0.0
 
 
-def value_balances(balances: dict[str, dict[str, float]], prices: dict[str, float]) -> PortfolioSnapshot:
+def value_balances(balances: dict[str, dict[str, float]], prices: dict[str, float],
+                   quote: str = "USDT", fx: float = 1.0) -> PortfolioSnapshot:
     assets: list[AssetValue] = []
     equity = 0.0
     usdt_free = usdt_total = 0.0
@@ -91,7 +107,9 @@ def value_balances(balances: dict[str, dict[str, float]], prices: dict[str, floa
             usdt_free, usdt_total = bal.get("free", 0.0), total
         assets.append(AssetValue(asset, bal.get("free", 0.0), bal.get("locked", 0.0), price, value))
     assets.sort(key=lambda a: a.value_usdt, reverse=True)
-    return PortfolioSnapshot(equity, usdt_free, usdt_total, assets, source="binance")
+    quote_free = balances.get(quote, {}).get("free", 0.0)
+    return PortfolioSnapshot(equity, usdt_free, usdt_total, assets, source="binance",
+                             quote_asset=quote, fx=fx, quote_free=quote_free)
 
 
 def decide_holding(score: ScoreResult | None, best_score: float | None,
@@ -121,12 +139,14 @@ class PortfolioManager:
         self.om = order_manager
         self._confirm: dict[str, tuple[str, int]] = {}
         self.last_account_error: str | None = None
+        self.quote = settings.quote_asset
+        self.fx = 1.0  # motor her döngüde günceller
 
     def real_snapshot(self, prices: dict[str, float]) -> PortfolioSnapshot | None:
         if not self.client.has_keys:
             return None
         try:
-            snap = value_balances(self.client.balances(), prices)
+            snap = value_balances(self.client.balances(), prices, self.quote, self.fx)
         except BinanceAPIError as exc:
             logger.warning("Hesap bakiyesi okunamadı: %s", exc)
             self.last_account_error = str(exc)
@@ -149,15 +169,18 @@ class PortfolioManager:
             if snap is None:
                 raise BinanceAPIError("LIVE modda hesap bakiyesi okunamadı")
             return snap
-        usdt = self.om.paper_usdt
-        assets = [AssetValue("USDT", usdt, 0.0, 1.0, usdt)]
-        equity = usdt
+        fx = self.fx or 1.0
+        cash = self.om.paper_balance  # işlem para birimi cinsinden
+        assets = [AssetValue(self.quote, cash, 0.0, 1 / fx, cash / fx)]
+        equity_quote = cash
         for t in open_trades:
             price = prices.get(t.symbol, t.entry_price)
             value = t.quantity * price
-            equity += value
-            assets.append(AssetValue(t.base_asset, t.quantity, 0.0, price, value))
-        return PortfolioSnapshot(equity, usdt, usdt, assets, source="paper")
+            equity_quote += value
+            assets.append(AssetValue(t.base_asset, t.quantity, 0.0, price / fx, value / fx))
+        usdt_cash = cash if self.quote == "USDT" else 0.0
+        return PortfolioSnapshot(equity_quote / fx, usdt_cash, usdt_cash, assets, source="paper",
+                                 quote_asset=self.quote, fx=fx, quote_free=cash)
 
     def assess_holdings(
         self,
@@ -171,16 +194,16 @@ class PortfolioManager:
         decisions: list[HoldingDecision] = []
         seen: set[str] = set()
         for a in snapshot.assets:
-            if a.asset == "USDT" or is_stablecoin(a.asset) or a.asset in bot_assets:
+            if a.asset in ("USDT", self.quote) or is_stablecoin(a.asset) or a.asset in bot_assets:
                 continue
             if a.value_usdt < self.s.min_holding_value_usdt:
                 continue
             seen.add(a.asset)
-            symbol = f"{a.asset}USDT"
+            symbol = f"{a.asset}{self.quote}"
             qty = a.free + a.locked
             if symbol not in tradable:
                 decisions.append(HoldingDecision(a.asset, None, qty, a.value_usdt, None, "HOLD",
-                                                 "İşleme uygun USDT paritesi yok"))
+                                                 f"İşleme uygun {self.quote} paritesi yok"))
                 continue
             try:
                 score = score_fn(symbol)

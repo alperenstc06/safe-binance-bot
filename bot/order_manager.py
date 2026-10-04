@@ -55,39 +55,41 @@ class FillResult:
 
 
 def commission_usdt(fee: float, asset: str, base_asset: str, fill_price: float,
-                    price_lookup) -> float:
+                    price_lookup, quote: str = "USDT") -> float:
+    """Komisyonun işlem para birimi (quote) karşılığı."""
     if fee <= 0:
         return 0.0
-    if asset == "USDT":
+    if asset == quote:
         return fee
     if asset == base_asset:
         return fee * fill_price
     try:
-        return fee * price_lookup(f"{asset}USDT")
+        return fee * price_lookup(f"{asset}{quote}")
     except Exception:  # fiyat bulunamazsa raporlamada 0 kabul edilir
-        logger.warning("Komisyon varlığı %s için USDT fiyatı alınamadı", asset)
+        logger.warning("Komisyon varlığı %s için %s fiyatı alınamadı", asset, quote)
         return 0.0
 
 
-def parse_market_fill(resp: dict, side: str, base_asset: str, price_lookup) -> FillResult:
+def parse_market_fill(resp: dict, side: str, base_asset: str, price_lookup,
+                      quote: str = "USDT") -> FillResult:
     executed = float(resp.get("executedQty", 0) or 0)
-    quote = float(resp.get("cummulativeQuoteQty", 0) or 0)
+    quote_amt = float(resp.get("cummulativeQuoteQty", 0) or 0)
     base_fee = usdt_fee = external = total = 0.0
     for f in resp.get("fills", []) or []:
         fee, asset, price = float(f.get("commission", 0)), f.get("commissionAsset", ""), float(f["price"])
-        value = commission_usdt(fee, asset, base_asset, price, price_lookup)
+        value = commission_usdt(fee, asset, base_asset, price, price_lookup, quote)
         total += value
         if asset == base_asset:
             base_fee += fee
-        elif asset == "USDT":
+        elif asset == quote:
             usdt_fee += fee
         else:
             external += value
-    avg = quote / executed if executed else 0.0
+    avg = quote_amt / executed if executed else 0.0
     if side == "BUY":
-        return FillResult(avg, executed - base_fee, quote + usdt_fee, total, external,
+        return FillResult(avg, executed - base_fee, quote_amt + usdt_fee, total, external,
                           str(resp.get("orderId")))
-    return FillResult(avg, executed + 0.0, quote - usdt_fee - base_fee * avg, total, external,
+    return FillResult(avg, executed + 0.0, quote_amt - usdt_fee - base_fee * avg, total, external,
                       str(resp.get("orderId")))
 
 
@@ -98,10 +100,20 @@ class OrderManager:
         self.s = settings
         self.live = settings.is_live
         self.fee_rate = settings.fee_rate
-        # Her borsanın kağıt bakiyesi ayrı tutulur
-        self.paper_key = PAPER_USDT_KEY if "@" not in book else f"{PAPER_USDT_KEY}@{book.split('@', 1)[1]}"
+        # Her borsanın kağıt bakiyesi ayrı ve kendi işlem para biriminde tutulur
+        self.quote = settings.quote_asset
+        exchange = book.split("@", 1)[1] if "@" in book else None
+        if self.quote == "USDT":
+            self.paper_key = PAPER_USDT_KEY if exchange is None else f"{PAPER_USDT_KEY}@{exchange}"
+            if not self.live and self.db.get_state(self.paper_key) is None:
+                self.db.set_state(self.paper_key, float(settings.dry_run_start_balance))
+        else:
+            self.paper_key = f"paper_{self.quote.lower()}@{exchange or 'BINANCE_GLOBAL'}"
+
+    def ensure_paper_balance(self, fx: float) -> None:
+        """DRY_RUN başlangıç bakiyesini (USDT) işlem para birimine çevirerek bir kez yazar."""
         if not self.live and self.db.get_state(self.paper_key) is None:
-            self.db.set_state(self.paper_key, float(settings.dry_run_start_balance))
+            self.db.set_state(self.paper_key, round(float(self.s.dry_run_start_balance) * fx, 8))
 
     def refresh_fee_rate(self) -> None:
         if self.live and self.client.has_keys:
@@ -109,8 +121,13 @@ class OrderManager:
 
     # --- Kağıt bakiye ---
     @property
-    def paper_usdt(self) -> float:
+    def paper_balance(self) -> float:
+        """Kağıt hesaptaki nakit (işlem para birimi cinsinden)."""
         return float(self.db.get_state(self.paper_key, self.s.dry_run_start_balance))
+
+    @property
+    def paper_usdt(self) -> float:
+        return self.paper_balance
 
     def _set_paper_usdt(self, value: float) -> None:
         self.db.set_state(self.paper_key, round(value, 8))
@@ -133,7 +150,7 @@ class OrderManager:
             fee = notional * self.fee_rate
             cost = notional + fee
             if cost > self.paper_usdt + 1e-9:
-                raise OrderError("Kağıt bakiyede yeterli USDT yok")
+                raise OrderError(f"Kağıt bakiyede yeterli {self.quote} yok")
             self._set_paper_usdt(self.paper_usdt - cost)
             return FillResult(price, float(qty), cost, fee, 0.0, "DRY-BUY")
 
@@ -141,7 +158,7 @@ class OrderManager:
             resp = self.client.market_buy(symbol, qty)
         except BinanceAPIError as exc:
             raise OrderError(f"Alış emri başarısız: {exc}") from exc
-        fill = parse_market_fill(resp, "BUY", filters.base_asset, self.client.price)
+        fill = parse_market_fill(resp, "BUY", filters.base_asset, self.client.price, filters.quote_asset)
         if fill.quantity <= 0:
             raise OrderError(f"{symbol}: alış emri gerçekleşmedi ({resp.get('status')})")
         return fill
@@ -173,7 +190,7 @@ class OrderManager:
             resp = self.client.market_sell(symbol, qty)
         except BinanceAPIError as exc:
             raise OrderError(f"Satış emri başarısız: {exc}") from exc
-        return parse_market_fill(resp, "SELL", filters.base_asset, self.client.price)
+        return parse_market_fill(resp, "SELL", filters.base_asset, self.client.price, filters.quote_asset)
 
     # --- Borsa tarafı koruyucu stop (yalnızca LIVE) ---
     def place_stop(self, symbol: str, quantity: float, stop: float,

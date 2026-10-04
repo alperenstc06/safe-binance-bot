@@ -71,9 +71,9 @@
 
   <div class="grid">
     <div class="card stat"><div class="label">Toplam portföy (USDT)</div><div class="value" id="equity">—</div></div>
-    <div class="card stat"><div class="label">Serbest USDT</div><div class="value" id="usdt">—</div></div>
-    <div class="card stat"><div class="label">Bugünkü PNL</div><div class="value" id="dpnl">—</div></div>
-    <div class="card stat"><div class="label">Toplam PNL</div><div class="value" id="tpnl">—</div></div>
+    <div class="card stat"><div class="label">Serbest <span class="q">USDT</span></div><div class="value" id="usdt">—</div></div>
+    <div class="card stat"><div class="label">Bugünkü PNL (<span class="q">USDT</span>)</div><div class="value" id="dpnl">—</div></div>
+    <div class="card stat"><div class="label">Toplam PNL (<span class="q">USDT</span>)</div><div class="value" id="tpnl">—</div></div>
     <div class="card stat"><div class="label">Bugünkü işlem</div><div class="value" id="tcount">—</div></div>
     <div class="card stat"><div class="label">Ardışık kayıp</div><div class="value" id="losses">—</div></div>
   </div>
@@ -81,7 +81,7 @@
   <div class="card">
     <h2>Açık pozisyon</h2>
     <div class="table-wrap"><table>
-      <thead><tr><th>Coin</th><th>Miktar</th><th>Alış</th><th>Güncel</th><th>Stop</th><th>Trailing stop</th><th>K/Z (USDT)</th><th>K/Z %</th><th>Puan</th></tr></thead>
+      <thead><tr><th>Coin</th><th>Miktar</th><th>Alış</th><th>Güncel</th><th>Stop</th><th>Trailing stop</th><th>K/Z (<span class="q">USDT</span>)</th><th>K/Z %</th><th>Puan</th></tr></thead>
       <tbody id="positions"><tr><td colspan="9" class="muted">Açık pozisyon yok</td></tr></tbody>
     </table></div>
   </div>
@@ -111,7 +111,7 @@
   <div class="card">
     <h2>Son işlemler</h2>
     <div class="table-wrap"><table>
-      <thead><tr><th>Coin</th><th>Durum</th><th>Alış</th><th>Satış</th><th>PNL</th><th>Komisyon</th><th>Sebep</th><th>Zaman</th></tr></thead>
+      <thead><tr><th>Coin</th><th>Durum</th><th>Alış</th><th>Satış</th><th>PNL (<span class="q">USDT</span>)</th><th>Komisyon</th><th>Sebep</th><th>Zaman</th></tr></thead>
       <tbody id="trades"></tbody>
     </table></div>
   </div>
@@ -214,7 +214,8 @@ async function refresh() {
     $("reset-emg").style.display = s.emergency_stop ? "" : "none";
     $("reason").textContent = s.no_trade_reason || "—";
     $("cycle").textContent = "Son döngü: " + (s.last_cycle_at || "—") + (s.last_error ? " | Hata: " + s.last_error : "") + (s.cooldown_until ? " | Soğuma: " + s.cooldown_until : "");
-    $("equity").textContent = num(s.equity_usdt, 2); $("usdt").textContent = num(s.usdt_free, 2);
+    $("equity").textContent = num(s.equity_usdt, 2); $("usdt").textContent = num(s.quote_free ?? s.usdt_free, 2);
+    document.querySelectorAll(".q").forEach(el => { el.textContent = s.quote_asset || "USDT"; });
     signed($("dpnl"), s.daily_pnl); signed($("tpnl"), s.total_pnl);
     $("tcount").textContent = s.trades_today + " / " + s.settings.max_daily_trades;
     $("losses").textContent = s.consecutive_losses + " / " + s.settings.max_consecutive_losses;

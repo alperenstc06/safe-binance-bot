@@ -17,13 +17,13 @@ from tests.conftest import FakeClient, make_settings
 SECRET = "trsecret"
 
 
-def tr_symbol(base, quote="USDT", type_=1, step="0.0001", tick="0.01", enabled=1):
+def tr_symbol(base, quote="TRY", type_=1, step="0.0001", tick="0.01", enabled=1):
     return {
         "type": type_, "symbol": f"{base}_{quote}", "baseAsset": base, "quoteAsset": quote,
         "spotTradingEnable": enabled,
         "orderTypes": ["LIMIT", "MARKET", "STOP_LOSS_LIMIT", "LIMIT_MAKER"],
         "filters": [
-            {"filterType": "PRICE_FILTER", "minPrice": tick, "maxPrice": "1000000", "tickSize": tick},
+            {"filterType": "PRICE_FILTER", "minPrice": tick, "maxPrice": "100000000", "tickSize": tick},
             {"filterType": "LOT_SIZE", "minQty": step, "maxQty": "9000000", "stepSize": step},
             {"filterType": "MIN_NOTIONAL", "minNotional": "5", "applyToMarket": True},
         ],
@@ -44,7 +44,7 @@ class FakeSession:
     def __init__(self, market: FakeClient):
         self.market = market
         self.calls = []
-        self.balances = {"USDT": {"free": "99", "locked": "0"}}
+        self.balances = {"USDT": {"free": "99", "locked": "0"}, "TRY": {"free": "4000", "locked": "0"}}
         self.orders = {}
         self.next_id = 100
         self.trades_available = True
@@ -69,9 +69,9 @@ class FakeSession:
         if self.error:
             return self._env(None, code=self.error[0], msg=self.error[1])
         if parsed.path == "/open/v1/common/symbols":
-            return self._env({"list": [tr_symbol("BTC", step="0.00001"), tr_symbol("ETH"),
+            return self._env({"list": [tr_symbol("BTC", step="0.00001", tick="1"), tr_symbol("ETH"),
                                        tr_symbol("SOL", step="0.001"),
-                                       tr_symbol("AVAX", quote="TRY", type_=0),
+                                       tr_symbol("USDT"),
                                        tr_symbol("LOCAL", type_=0)]})
         params = self._check_sig(parsed.query, headers)
         if parsed.path == "/open/v1/account/spot":
@@ -86,7 +86,7 @@ class FakeSession:
             if not self.trades_available:
                 return self._env({"list": []})
             base = o["symbol"].split("_")[0]
-            asset = base if o["side"] == 0 else "USDT"
+            asset = base if o["side"] == 0 else o["symbol"].split("_")[1]
             comm = float(o["executedQty"]) * 0.001 if o["side"] == 0 else float(o["executedQuoteQty"]) * 0.001
             return self._env({"list": [{"orderId": o["orderId"], "price": o["executedPrice"],
                                         "qty": o["executedQty"], "commission": str(comm),
@@ -109,6 +109,12 @@ class FakeSession:
                      "origQty": params["quantity"], "executedQty": params["quantity"],
                      "executedPrice": str(price), "executedQuoteQty": str(qty * price),
                      "status": 2 if self.fill_immediately else 0}
+                base, quote = params["symbol"].split("_")
+                sign = 1 if params["side"] == "0" else -1
+                for asset, delta in ((base, sign * qty * (0.999 if sign > 0 else 1)),
+                                     (quote, -sign * qty * price * (1 if sign > 0 else 0.999))):
+                    b = self.balances.setdefault(asset, {"free": "0", "locked": "0"})
+                    b["free"] = str(float(b["free"]) + delta)
             else:
                 o = {"orderId": oid, "symbol": params["symbol"], "side": int(params["side"]),
                      "type": int(params["type"]), "origQty": params["quantity"], "executedQty": "0",
@@ -135,18 +141,18 @@ def make_tr(market=None, keys=True):
 def test_symbols_converted_and_only_shared_book_tradable():
     client, _, _ = make_tr()
     filters = client.load_exchange_info()
-    assert {"BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXTRY", "LOCALUSDT"} <= set(filters)
+    assert {"BTCTRY", "ETHTRY", "SOLTRY", "USDTTRY", "LOCALTRY"} <= set(filters)
     raw = {s["symbol"]: s for s in client.symbols_raw()}
-    assert raw["BTCUSDT"]["status"] == "TRADING"
-    assert raw["LOCALUSDT"]["status"] == "BREAK"  # ortak defterde değil -> işlem yok
-    assert client.tr_symbol("BTCUSDT") == "BTC_USDT"
-    assert filters["BTCUSDT"].step_size == Decimal("0.00001")
+    assert raw["BTCTRY"]["status"] == "TRADING"
+    assert raw["LOCALTRY"]["status"] == "BREAK"  # ortak defterde değil -> işlem yok
+    assert client.tr_symbol("BTCTRY") == "BTC_TRY"
+    assert filters["BTCTRY"].step_size == Decimal("0.00001")
 
 
 def test_signed_request_and_balances():
     client, session, _ = make_tr()
     bals = client.balances()
-    assert bals == {"USDT": {"free": 99.0, "locked": 0.0}}
+    assert bals == {"USDT": {"free": 99.0, "locked": 0.0}, "TRY": {"free": 4000.0, "locked": 0.0}}
     assert client.taker_fee_rate(0.002) == pytest.approx(0.001)
     perms = client.api_permissions()
     assert perms["permissions_verifiable"] is False
@@ -169,13 +175,13 @@ def test_signed_call_requires_keys():
 
 def test_market_buy_waits_for_fill_and_reads_commission():
     client, session, market = make_tr()
-    resp = client.market_buy("ETHUSDT", Decimal("0.05"))
+    resp = client.market_buy("ETHTRY", Decimal("0.05"))
     assert resp["status"] == "FILLED"
     assert float(resp["executedQty"]) == pytest.approx(0.05)
     assert resp["fills"][0]["commissionAsset"] == "ETH"
     post = [c for c in session.calls if c[0] == "POST"][0]
     params = dict(parse_qsl(post[2]))
-    assert params["symbol"] == "ETH_USDT" and params["side"] == "0" and params["type"] == "2"
+    assert params["symbol"] == "ETH_TRY" and params["side"] == "0" and params["type"] == "2"
 
 
 def test_market_sell_commission_estimated_when_trades_missing():
@@ -183,20 +189,20 @@ def test_market_sell_commission_estimated_when_trades_missing():
     session.trades_available = False
     session.fill_immediately = True
     client.taker_fee_rate(0.001)
-    resp = client.market_sell("ETHUSDT", Decimal("0.05"))
+    resp = client.market_sell("ETHTRY", Decimal("0.05"))
     fill = resp["fills"][0]
-    assert fill["commissionAsset"] == "USDT"
+    assert fill["commissionAsset"] == "TRY"
     assert float(fill["commission"]) == pytest.approx(float(resp["cummulativeQuoteQty"]) * 0.001)
 
 
 def test_stop_order_cancel_and_status_normalized():
     client, session, _ = make_tr()
-    o = client.stop_loss_limit_sell("ETHUSDT", Decimal("0.05"), Decimal("900"), Decimal("895.5"))
+    o = client.stop_loss_limit_sell("ETHTRY", Decimal("0.05"), Decimal("36000"), Decimal("35820"))
     assert o["status"] == "NEW"
     params = dict(parse_qsl([c for c in session.calls if c[0] == "POST"][-1][2]))
-    assert params["type"] == "4" and params["stopPrice"] == "900" and params["price"] == "895.5"
-    assert client.get_order("ETHUSDT", o["orderId"])["status"] == "NEW"
-    assert client.cancel_order("ETHUSDT", o["orderId"])["status"] == "CANCELED"
+    assert params["type"] == "4" and params["stopPrice"] == "36000" and params["price"] == "35820"
+    assert client.get_order("ETHTRY", o["orderId"])["status"] == "NEW"
+    assert client.cancel_order("ETHTRY", o["orderId"])["status"] == "CANCELED"
 
 
 def test_normalize_order_status_codes():
@@ -221,14 +227,21 @@ def test_engine_dry_run_on_tr_uses_separate_book_and_shows_both_accounts():
     engine = BotEngine(tr_settings(), tr, db, accounts={"BINANCE_GLOBAL": global_client})
     assert engine.book == "DRY_RUN@BINANCE_TR"
     engine.run_cycle(force_scan=True)
+    assert engine.quote == "TRY" and engine.fx == pytest.approx(40)
     trades = db.open_trades("DRY_RUN@BINANCE_TR")
-    assert len(trades) == 1 and trades[0].symbol in ("BTCUSDT", "ETHUSDT")
+    assert len(trades) == 1 and trades[0].symbol in ("BTCTRY", "ETHTRY")
+    # kağıt bakiye TL cinsinden: 1000 USDT * 40 = 40000 TL, pozisyon en fazla %20
+    assert trades[0].entry_quote <= 40000 * 0.20 * 1.01
+    assert db.get_state("paper_try@BINANCE_TR") < 40000
     assert not db.open_trades("DRY_RUN")
     assert not [c for c in session.calls if c[0] == "POST"]  # DRY_RUN: emir yok
     st = engine.status()
     assert st["exchange"] == "BINANCE_TR"
     views = {a["exchange"]: a for a in st["accounts"]}
-    assert views["BINANCE_TR"]["trading"] and views["BINANCE_TR"]["portfolio"]["equity_usdt"] == pytest.approx(99)
+    assert views["BINANCE_TR"]["trading"]
+    assert views["BINANCE_TR"]["portfolio"]["equity_usdt"] == pytest.approx(99 + 4000 / 40)
+    assert views["BINANCE_TR"]["portfolio"]["quote_free"] == pytest.approx(4000)
+    assert st["quote_asset"] == "TRY"
     assert not views["BINANCE_GLOBAL"]["trading"]
     assert views["BINANCE_GLOBAL"]["portfolio"]["equity_usdt"] == pytest.approx(2.5)
     # Global'in kağıt bakiyesi etkilenmedi
@@ -238,14 +251,15 @@ def test_engine_dry_run_on_tr_uses_separate_book_and_shows_both_accounts():
 def test_engine_live_on_tr_places_exchange_stop():
     market = FakeClient()
     tr, session, _ = make_tr(market)
-    session.balances = {"USDT": {"free": "1000", "locked": "0"}}
+    session.balances = {"TRY": {"free": "40000", "locked": "0"}}
     db = Database("sqlite:///:memory:")
     engine = BotEngine(tr_settings(trading_mode="LIVE"), tr, db)
     engine.safety_check()
     assert any("doğrulanamıyor" in l.message for l in db.recent_logs(10))
     engine.run_cycle(force_scan=True)
     t = db.open_trades("LIVE@BINANCE_TR")[0]
-    assert t.stop_order_id is not None
+    assert t.symbol.endswith("TRY") and t.stop_order_id is not None
+    assert t.entry_quote <= 40000 * 0.20 * 1.01
     posts = [dict(parse_qsl(c[2])) for c in session.calls if c[0] == "POST"]
     assert posts[0]["type"] == "2" and posts[1]["type"] == "4"
 
@@ -256,7 +270,9 @@ def test_config_tr_live_requires_tr_keys():
         make_settings(trading_mode="LIVE", trading_exchange="BINANCE_TR",
                       binance_api_key="k", binance_api_secret="s")
     s = tr_settings(trading_mode="LIVE")
-    assert s.is_tr and s.has_trading_keys
+    assert s.is_tr and s.has_trading_keys and s.quote_asset == "TRY"
+    assert make_settings().quote_asset == "USDT"
+    assert tr_settings(quote_asset="usdt").quote_asset == "USDT"
     with pytest.raises(ValidationError):
         make_settings(trading_exchange="KRAKEN")
 
@@ -270,7 +286,32 @@ def test_market_order_tracked_even_if_status_query_fails():
             return Resp({"code": -1, "msg": "internal error", "data": None})
         return real_get(url, headers=headers, timeout=timeout)
     session.get = failing_get
-    resp = client.market_buy("ETHUSDT", Decimal("0.05"))
+    resp = client.market_buy("ETHTRY", Decimal("0.05"))
     assert resp["status"] == "FILLED"
     assert float(resp["executedQty"]) == pytest.approx(0.05)
     assert float(resp["cummulativeQuoteQty"]) > 0
+
+
+def test_live_tr_position_kept_open_if_stop_and_close_both_fail():
+    """Stop konamaz VE satış da başarısız olursa pozisyon terk edilmez (açık kalır)."""
+    market = FakeClient()
+    tr, session, _ = make_tr(market)
+    session.balances = {"TRY": {"free": "40000", "locked": "0"}}
+    db = Database("sqlite:///:memory:")
+    engine = BotEngine(tr_settings(trading_mode="LIVE"), tr, db)
+    real_post = session.post
+
+    def post(url, data=None, headers=None, timeout=None):
+        params = dict(parse_qsl(data))
+        if params.get("type") == "4" or (params.get("type") == "2" and params.get("side") == "1"):
+            return Resp({"code": -2010, "msg": "rejected", "data": None})
+        return real_post(url, data=data, headers=headers, timeout=timeout)
+    session.post = post
+    engine.run_cycle(force_scan=True)
+    open_trades = db.open_trades("LIVE@BINANCE_TR")
+    assert len(open_trades) == 1 and open_trades[0].stop_order_id is None
+    assert not db.closed_trades_desc(mode="LIVE@BINANCE_TR")
+    # stop artık kabul ediliyor -> sonraki döngüde borsa stopu yerleştirilir
+    session.post = real_post
+    engine.run_cycle()
+    assert db.open_trades("LIVE@BINANCE_TR")[0].stop_order_id is not None

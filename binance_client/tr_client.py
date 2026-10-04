@@ -313,7 +313,8 @@ class BinanceTRClient:
             rate = self._fee_rate if self._fee_rate is not None else 0.001
             price = quote / executed
             commission = executed * rate if side == "BUY" else quote * rate
-            asset = self.get_filters(symbol).base_asset if side == "BUY" else "USDT"
+            flt = self.get_filters(symbol)
+            asset = flt.base_asset if side == "BUY" else flt.quote_asset
             fills = [{"price": str(price), "qty": str(executed), "commission": str(commission),
                       "commissionAsset": asset}]
         norm["fills"] = fills

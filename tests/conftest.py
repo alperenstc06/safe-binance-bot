@@ -72,11 +72,18 @@ class FakeClient:
             "LOWUSDT": make_klines(1),
             "USDCUSDT": make_klines(1, up=0.0, down=0.0),
             "BTCUPUSDT": make_klines(5),
+            # Binance TR'nin TL pariteleri (ortak defter) ve kur
+            "BTCTRY": make_klines(30000 * 40),
+            "ETHTRY": make_klines(1000 * 40),
+            "SOLTRY": make_klines(20 * 40, up=0.003, down=-0.009),
+            "USDTTRY": make_klines(40, up=0.0, down=0.0),
         }
         self.daily_len = {s: 60 for s in self.kl}
         self.daily_len["NEWUSDT"] = 5
         self.quote_volume = {"BTCUSDT": 900e6, "ETHUSDT": 400e6, "SOLUSDT": 150e6,
-                             "NEWUSDT": 80e6, "LOWUSDT": 1e6, "USDCUSDT": 500e6, "BTCUPUSDT": 50e6}
+                             "NEWUSDT": 80e6, "LOWUSDT": 1e6, "USDCUSDT": 500e6, "BTCUPUSDT": 50e6,
+                             "BTCTRY": 900e6 * 40, "ETHTRY": 400e6 * 40, "SOLTRY": 150e6 * 40,
+                             "USDTTRY": 500e6 * 40}
         self.change_pct = {s: 1.5 for s in self.kl}
         self.spread = {s: 0.0001 for s in self.kl}
         self.override_price: dict[str, float] = {}

@@ -157,6 +157,10 @@ class Settings(BaseSettings):
             raise ValueError("MAX_OPEN_POSITIONS en az 1 olmalı")
         if self.stop_atr_multiplier <= 0 or self.trailing_atr_multiplier <= 0:
             raise ValueError("ATR çarpanları pozitif olmalı")
+        # Binance TR'de pariteler TL (TRY) bazlıdır; açıkça ayarlanmadıysa TRY kullanılır
+        if self.is_tr and "quote_asset" not in self.model_fields_set:
+            self.quote_asset = "TRY"
+        self.quote_asset = self.quote_asset.strip().upper()
         if self.trading_mode == TradingMode.LIVE and not self.has_trading_keys:
             names = ("BINANCE_TR_API_KEY ve BINANCE_TR_API_SECRET" if self.is_tr
                      else "BINANCE_API_KEY ve BINANCE_API_SECRET")
@@ -207,6 +211,7 @@ class Settings(BaseSettings):
         return {
             "trading_mode": self.trading_mode.value,
             "trading_exchange": self.trading_exchange.value,
+            "quote_asset": self.quote_asset,
             "has_tr_api_keys": self.has_tr_api_keys,
             "testnet": self.binance_testnet,
             "has_api_keys": self.has_api_keys,

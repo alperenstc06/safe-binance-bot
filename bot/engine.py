@@ -49,6 +49,8 @@ class BotEngine:
         self.exchange = settings.trading_exchange.value
         # Kayıt defteri: Global için "DRY_RUN"/"LIVE", TR için "DRY_RUN@BINANCE_TR" vb.
         self.book = self.mode if self.exchange == "BINANCE_GLOBAL" else f"{self.mode}@{self.exchange}"
+        self.quote = settings.quote_asset
+        self.fx = 1.0  # 1 USDT = fx birim işlem para birimi
         self.accounts = dict(accounts or {})
         self.accounts[self.exchange] = client
         self.account_views: dict[str, dict] = {}
@@ -218,6 +220,9 @@ class BotEngine:
             if self.last_cycle_at is None:
                 self.orders.refresh_fee_rate()
             self.prices = self.client.prices()
+            self.fx = self._fx_rate()
+            self.portfolio.fx = self.fx
+            self.orders.ensure_paper_balance(self.fx)
 
             for t in self.db.open_trades(self.book):
                 if t.symbol not in filters:
@@ -231,7 +236,7 @@ class BotEngine:
             open_trades = self.db.open_trades(self.book)
             self.snapshot = self.portfolio.snapshot(self.prices, open_trades)
             unrealized = sum(self.unrealized_pnl(t) for t in open_trades)
-            stat = self._update_daily(now, self.snapshot.equity_usdt)
+            stat = self._update_daily(now, self.snapshot.equity_quote)
 
             due = force_scan or time.time() - self.last_scan_at >= self.s.scan_interval_seconds
             if due:
@@ -241,9 +246,9 @@ class BotEngine:
             open_trades = self.db.open_trades(self.book)
             self.snapshot = self.portfolio.snapshot(self.prices, open_trades)
             unrealized = sum(self.unrealized_pnl(t) for t in open_trades)
-            self._update_daily(now, self.snapshot.equity_usdt)
+            self._update_daily(now, self.snapshot.equity_quote)
             self.db.add_pnl_snapshot(
-                equity_usdt=self.snapshot.equity_usdt, usdt_balance=self.snapshot.usdt_free,
+                equity_usdt=self.snapshot.equity_usdt, usdt_balance=self.snapshot.quote_free,
                 daily_pnl=self.risk.daily_pnl(now, unrealized),
                 total_pnl=self.db.total_realized_pnl(self.book) + unrealized,
                 unrealized_pnl=unrealized,
@@ -255,7 +260,7 @@ class BotEngine:
         tickers = self.client.ticker_24h_all()
         books = self.client.book_tickers()
         self.regime = self._detect_regime(tickers)
-        scan = self.scanner.scan(self.regime.regime.value, tickers=tickers, books=books)
+        scan = self.scanner.scan(self.regime.regime.value, tickers=tickers, books=books, fx=self.fx)
         self.last_scan = scan
         self._save_signals(scan)
         tradable = set(self.scanner.tradable_symbols())
@@ -299,6 +304,18 @@ class BotEngine:
                 view["portfolio"] = snap.to_dict() if snap else None
             views[name] = view
         self.account_views = views
+
+    def _fx_rate(self) -> float:
+        """1 USDT'nin işlem para birimindeki karşılığı (USDT için 1, TRY için USDTTRY)."""
+        if self.quote == "USDT":
+            return 1.0
+        direct = self.prices.get(f"USDT{self.quote}")
+        if direct:
+            return direct
+        inverse = self.prices.get(f"{self.quote}USDT")
+        if inverse:
+            return 1 / inverse
+        raise BinanceAPIError(f"USDT/{self.quote} kuru alınamadı")
 
     def _detect_regime(self, tickers: list[dict]) -> RegimeResult:
         btc = next((t for t in tickers if t.get("symbol") == "BTCUSDT"), {})
@@ -381,7 +398,7 @@ class BotEngine:
         if not edge.ok:
             return False, edge.reason
         snap = self.snapshot or self.portfolio.snapshot(self.prices, self.db.open_trades(self.book))
-        size = self.risk.position_size(snap.equity_usdt, snap.usdt_free, est_entry, est_stop, size_mult)
+        size = self.risk.position_size(snap.equity_quote, snap.quote_free, est_entry, est_stop, size_mult)
         if not size.ok:
             return False, size.reason
         try:
@@ -409,18 +426,24 @@ class BotEngine:
         self.db.log_decision("TRADE", (
             f"ALIŞ {cand.symbol} miktar={fill.quantity:.8g} fiyat={fill.avg_price:.8g} "
             f"stop={stop:.8g} puan={cand.score:.1f} beklenen net={edge.expected_net_pct * 100:.2f}% "
-            f"risk≈{size.risk_usdt:.2f} USDT"), data={"components": cand.components})
+            f"risk≈{size.risk_usdt:.2f} {self.quote}"), data={"components": cand.components})
 
         if self.s.is_live and self.s.place_exchange_stop:
             order_id, stop_px = self._safe_place_stop(trade, filters)
             if order_id is None and filters.supports("STOP_LOSS_LIMIT"):
                 self.db.log_decision("SAFETY", f"{cand.symbol} koruyucu stop yerleştirilemedi; "
                                                f"pozisyon güvenlik için kapatılıyor", level="ERROR")
-                self.close_trade(trade, "STOP_PLACEMENT_FAILED")
+                try:
+                    self.close_trade(trade, "STOP_PLACEMENT_FAILED")
+                except (BinanceAPIError, OrderError) as exc:
+                    self.db.log_decision("SAFETY", f"{cand.symbol} kapatılamadı: {exc}. Yazılım stopu "
+                                                   f"aktif, borsa stopu her döngüde yeniden denenecek.",
+                                         level="ERROR")
+                    return True, "Pozisyon açık kaldı (stop yeniden denenecek)"
                 return False, "Koruyucu stop yerleştirilemedi"
             trade.stop_order_id, trade.stop_order_price = order_id, stop_px
             self.db.save_trade(trade)
-        self._update_daily(utcnow(), snap.equity_usdt)
+        self._update_daily(utcnow(), snap.equity_quote)
         return True, "OK"
 
     def _safe_place_stop(self, trade: Trade, filters) -> tuple[str | None, float | None]:
@@ -443,6 +466,12 @@ class BotEngine:
                     t.quantity = max(0.0, t.quantity - fill.quantity)
                 t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
                 self.db.save_trade(t)
+        elif self.s.is_live and self.s.place_exchange_stop and filters.supports("STOP_LOSS_LIMIT"):
+            # Borsa stopu yoksa (önceki yerleştirme başarısız) her döngüde yeniden dene
+            t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
+            if t.stop_order_id:
+                self.db.log_decision("STOP", f"{t.symbol} koruyucu stop emri yerleştirildi")
+            self.db.save_trade(t)
 
         bid = float(self.client.book_ticker(t.symbol)["bidPrice"])
         candles = Candles.from_klines(self.client.klines(t.symbol, self.s.kline_interval,
@@ -506,6 +535,12 @@ class BotEngine:
             fill = FillResult.combine(filled, sold)
             if fill is None:
                 bid = float(self.client.book_ticker(t.symbol)["bidPrice"])
+                if remaining > 0 and remaining * bid >= float(filters.min_notional or 0):
+                    # Gerçek bir pozisyon satılamadı: kayıt AÇIK kalır, sonraki döngüde tekrar denenir
+                    t.stop_order_id = None
+                    self.db.save_trade(t)
+                    raise OrderError(f"{t.symbol} satılamadı (bakiye={available}); pozisyon açık "
+                                     f"bırakıldı, tekrar denenecek")
                 fill = FillResult(bid, 0.0, 0.0, 0.0)
                 self._finalize_close(t, fill, reason, note="Satılamayan toz bakiye; değer 0 kabul edildi")
             else:
@@ -529,9 +564,9 @@ class BotEngine:
             t.notes = (t.notes or "") + f" | {note}"
         self.db.save_trade(t)
         self.db.log_decision("TRADE", f"SATIŞ {t.symbol} sebep={reason} fiyat={fill.avg_price:.8g} "
-                                      f"PNL={pnl:.4f} USDT ({t.pnl_pct:.2f}%)")
+                                      f"PNL={pnl:.4f} {self.quote} ({t.pnl_pct:.2f}%)")
         if self.snapshot is not None:
-            self._update_daily(utcnow(), self.snapshot.equity_usdt)
+            self._update_daily(utcnow(), self.snapshot.equity_quote)
 
     def close_all_positions(self, reason: str = "MANUAL_CLOSE_ALL") -> list[str]:
         results: list[str] = []
@@ -598,7 +633,7 @@ class BotEngine:
                 fill = self.orders.sell(d.symbol, qty, filters, available=bal["free"])
                 if fill is not None:
                     self.db.log_decision("HOLDING", f"{d.decision} {d.symbol} miktar={fill.quantity:.8g} "
-                                                    f"tutar={fill.quote_net:.2f} USDT: {d.reason}")
+                                                    f"tutar={fill.quote_net:.2f} {self.quote}: {d.reason}")
                     self.portfolio._confirm.pop(d.asset, None)
             except (BinanceAPIError, OrderError) as exc:
                 self.db.log_decision("HOLDING", f"{d.symbol} satılamadı: {exc}", level="ERROR")
@@ -661,7 +696,10 @@ class BotEngine:
             "regime": self.regime.regime.value if self.regime else None,
             "regime_reason": self.regime.reason if self.regime else None,
             "equity_usdt": round(snap.equity_usdt, 4) if snap else None,
-            "usdt_free": round(snap.usdt_free, 4) if snap else None,
+            "usdt_free": round(snap.quote_free, 4) if snap else None,
+            "quote_free": round(snap.quote_free, 4) if snap else None,
+            "quote_asset": self.quote,
+            "fx": self.fx,
             "portfolio": snap.to_dict() if snap else None,
             "real_portfolio": self.real_snapshot.to_dict() if self.real_snapshot else None,
             "account_status": {
