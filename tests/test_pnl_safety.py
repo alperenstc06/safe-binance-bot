@@ -206,3 +206,21 @@ def test_commission_rounding_difference_adjusts_quantity_keeps_cost():
     assert t2.stop_order_id is not None
     assert t2.quantity <= t.quantity * 0.995 + 1e-12
     assert t2.entry_quote == pytest.approx(cost0)
+
+
+def test_stop_filter_failure_reason_is_logged_and_sync_message_honest():
+    db = Database("sqlite:///:memory:")
+    engine, fake, _ = live_engine(db=db)
+    engine.run_cycle(force_scan=True)
+    t = db.open_trades("LIVE")[0]
+    fake.cancel_order(t.symbol, int(t.stop_order_id))
+    # fiyat filtresi stopu reddetsin (minPrice stopun üstünde)
+    for info in fake.infos:
+        if info["symbol"] == t.symbol:
+            info["filters"][0]["minPrice"] = str(t.stop_price * 2)
+    engine2 = BotEngine(engine.s, fake, db)
+    msgs = engine2.sync_positions()
+    assert any("KONAMADI" in m for m in msgs)
+    assert any("borsa stop emri konamadı" in l.message and "minPrice" in l.message
+               for l in db.recent_logs(20))
+    assert db.get_trade(t.id).stop_order_id is None

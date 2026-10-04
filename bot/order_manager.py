@@ -100,6 +100,7 @@ class OrderManager:
         self.s = settings
         self.live = settings.is_live
         self.fee_rate = settings.fee_rate
+        self.last_stop_error: str | None = None
         # Her borsanın kağıt bakiyesi ayrı ve kendi işlem para biriminde tutulur
         self.quote = settings.quote_asset
         exchange = book.split("@", 1)[1] if "@" in book else None
@@ -195,9 +196,11 @@ class OrderManager:
     # --- Borsa tarafı koruyucu stop (yalnızca LIVE) ---
     def place_stop(self, symbol: str, quantity: float, stop: float,
                    filters: SymbolFilters) -> tuple[str | None, float | None]:
+        self.last_stop_error = None
         if not self.live or not self.s.place_exchange_stop:
             return None, None
         if not filters.supports("STOP_LOSS_LIMIT"):
+            self.last_stop_error = "Sembol STOP_LOSS_LIMIT desteklemiyor; yazılım stopu kullanılıyor"
             logger.warning("%s STOP_LOSS_LIMIT desteklemiyor; yazılım stopu kullanılacak", symbol)
             return None, None
         qty = filters.round_qty(quantity)
@@ -208,6 +211,8 @@ class OrderManager:
             filters.validate_price(limit_p)
             filters.validate_order(qty, limit_p)
         except FilterError as exc:
+            self.last_stop_error = (f"filtre: {exc} (miktar={qty}, stop={stop_p}, limit={limit_p}, "
+                                    f"tick={filters.tick_size}, step={filters.step_size})")
             logger.warning("%s borsa stopu yerleştirilemedi: %s", symbol, exc)
             return None, None
         resp = self.client.stop_loss_limit_sell(symbol, qty, stop_p, limit_p)

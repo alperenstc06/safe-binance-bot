@@ -241,7 +241,9 @@ class BotEngine:
                                         f"kalan {t.quantity:.8g} açık, satılan kısım PNL'i tahmini")
                 if status in ("NONE", "GONE"):
                     t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
-                    messages.append(f"{t.symbol}: koruyucu stop emri yeniden yerleştirildi")
+                    messages.append(f"{t.symbol}: koruyucu stop emri yeniden yerleştirildi" if t.stop_order_id
+                                    else f"{t.symbol}: borsa stop emri KONAMADI (yazılım stopu aktif, "
+                                         f"her döngüde tekrar denenecek)")
                 self.db.save_trade(t)
             for m in messages:
                 self.db.log_decision("SYNC", m)
@@ -558,9 +560,13 @@ class BotEngine:
                 result = self.orders.place_stop(trade.symbol, stop_qty, trade.stop_price, filters)
                 self._stop_errors.pop(trade.symbol, None)
                 self._unverified_cycles.pop(trade.id, None)
-                if result[0] is None and self.s.is_live and self.s.place_exchange_stop \
-                        and filters.supports("STOP_LOSS_LIMIT"):
-                    self._last_stop_failure = "ORDER"
+                if result[0] is None and self.s.is_live and self.s.place_exchange_stop:
+                    self._last_stop_failure = "ORDER" if filters.supports("STOP_LOSS_LIMIT") else None
+                    reason = self.orders.last_stop_error or "bilinmeyen sebep"
+                    if self._stop_errors.get(trade.symbol) != reason:
+                        self._stop_errors[trade.symbol] = reason
+                        self.db.log_decision("STOP", f"{trade.symbol} borsa stop emri konamadı: {reason}",
+                                             level="ERROR")
                 return result
             except BinanceAPIError as exc:
                 last_error = str(exc)
