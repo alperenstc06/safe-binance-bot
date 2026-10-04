@@ -180,7 +180,9 @@ class RiskManager:
     def consecutive_losses(self) -> tuple[int, datetime | None]:
         streak = 0
         last_loss_time: datetime | None = None
-        for t in self.db.closed_trades_desc(limit=self.s.max_consecutive_losses + 20, mode=self.mode):
+        for t in self.db.closed_trades_desc(limit=self.s.max_consecutive_losses + 40, mode=self.mode):
+            if (t.exit_reason or "").startswith("PARTIAL"):
+                continue  # kısmi kapanışlar ayrı işlem sayılmaz
             if (t.pnl_usdt or 0.0) < 0:
                 if last_loss_time is None:
                     last_loss_time = t.exit_time

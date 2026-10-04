@@ -229,13 +229,20 @@ class OrderManager:
         return self._fill_from_order(resp)
 
     def check_stop_filled(self, symbol: str, order_id: str | None) -> tuple[str, FillResult | None]:
-        """(durum, dolum) döner. Durum: NONE / OPEN / FILLED / GONE."""
+        """(durum, dolum) döner. Durum: NONE / OPEN / FILLED / GONE / UNKNOWN.
+
+        UNKNOWN: emir durumu okunamadı (ağ/API hatası). Bu durumda emir VAR kabul edilir;
+        ikinci bir stop konmaz, sonraki döngüde tekrar sorgulanır.
+        """
         if not self.live or not order_id:
             return "NONE", None
         try:
             order = self.client.get_order(symbol, order_id)
-        except BinanceAPIError:
-            return "GONE", None
+        except BinanceAPIError as exc:
+            if exc.code in (-2013, -2011):  # emir borsada yok
+                return "GONE", None
+            logger.warning("%s stop emri durumu okunamadı: %s", symbol, exc)
+            return "UNKNOWN", None
         status = order.get("status")
         if status == "FILLED":
             return "FILLED", self._fill_from_order(order)

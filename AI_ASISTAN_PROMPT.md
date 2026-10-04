@@ -17,7 +17,7 @@ emin olmadığın Binance API ayrıntılarını uydurma, belirsizse bana söyle.
 - Dil: Python 3.12, Windows 10/11 üzerinde PowerShell + venv ile çalışıyor.
 - Çalıştırma: `.venv\Scripts\activate` sonra `python -m app.main`; panel http://127.0.0.1:8000
 - Güncelleme: `git pull` sonra botu yeniden başlatmak. Testler: `pytest -q` (ağ gerektirmez,
-  sahte Binance istemcileri kullanır; şu an 108 test geçiyor).
+  sahte Binance istemcileri kullanır; şu an 121 test geçiyor).
 - Bağımlılıklar: binance-connector (resmi Binance Spot SDK), FastAPI, uvicorn, SQLAlchemy 2,
   pydantic-settings, requests. Veritabanı: SQLite (data/bot.db).
 
@@ -93,6 +93,11 @@ emin olmadığın Binance API ayrıntılarını uydurma, belirsizse bana söyle.
 - İğne önlemleri: strategy.wick_stats() ile sık/uzun iğneli coinler elenir; risk_manager.
   wick_aware_stop() ilk stopu yakın dibin altına koyar (en fazla 3 ATR); _open_position emir
   anında spread ve fiyat sapmasını tekrar kontrol eder.
+- Kayıt güvenliği (engine): miktar/maliyet YALNIZCA gerçekleşme raporundan; bakiye ile miktar
+  küçültme yalnızca %2 (QTY_TOLERANCE) içinde. _apply_fill() tam/kısmi kapanışı ayırır (kısmi
+  kayıtlar exit_reason "PARTIAL_..." ile, oransal maliyet). _check_consistency() tutarsız kaydı
+  kapatmaz, flag_review() ile "review_required" bayrağı açar ve yeni işlemleri durdurur.
+  Stop durumu okunamazsa (UNKNOWN) ikinci stop konmaz. Onarım: tools/repair_trades.py.
 - bot/portfolio_manager.py: Hesap değerleme, HOLD/PARTIAL_SELL/SELL önerileri (mevcut varlıklar
   varsayılan olarak SATILMAZ; MANAGE_EXISTING_HOLDINGS=false).
 - database/models.py, database/database.py: Trade, Signal, DecisionLog, BotStateKV, DailyStat,

@@ -35,6 +35,16 @@ logger = logging.getLogger(__name__)
 
 EMERGENCY_KEY = "emergency_stop"
 RUNNING_KEY = "running"
+REVIEW_KEY = "review_required"
+# Komisyon/yuvarlama kaynaklı kabul edilebilir miktar farkı (oran)
+QTY_TOLERANCE = 0.02
+# Borsa stopu bakiye doğrulanamadığı için bu kadar döngü konamazsa inceleme istenir
+MAX_UNVERIFIED_STOP_CYCLES = 10
+PARTIAL_PREFIX = "PARTIAL"
+
+
+class ReviewRequired(OrderError):
+    """Kayıt ile borsa durumu tutarsız: otomatik işlem yapılmaz, kullanıcı incelemesi gerekir."""
 
 
 class SafetyError(RuntimeError):
@@ -76,6 +86,8 @@ class BotEngine:
         self.prices: dict[str, float] = {}
         self._synced = False
         self._stop_errors: dict[str, str] = {}
+        self._last_stop_failure: str | None = None  # "BALANCE" / "ORDER" / None
+        self._unverified_cycles: dict[int, int] = {}
 
     # ------------------------------------------------------------------ durum
     @property
@@ -183,26 +195,50 @@ class BotEngine:
                     messages.append(f"{t.symbol}: DRY_RUN pozisyonu geri yüklendi")
                     continue
                 status, fill = self.orders.check_stop_filled(t.symbol, t.stop_order_id)
-                if status == "FILLED" and fill is not None:
-                    self._finalize_close(t, fill, "STOP_LOSS_EXCHANGE")
-                    messages.append(f"{t.symbol}: kapalıyken borsa stopu tetiklenmiş, kapatıldı")
-                    continue
+                if status in ("FILLED", "GONE") and fill is not None:
+                    t.stop_order_id = None
+                    try:
+                        closed = self._apply_fill(t, fill, "STOP_LOSS_EXCHANGE", filters)
+                    except ReviewRequired:
+                        messages.append(f"{t.symbol}: kayıt tutarsız, inceleme gerekiyor")
+                        continue
+                    if closed:
+                        messages.append(f"{t.symbol}: kapalıyken borsa stopu tetiklenmiş, kapatıldı")
+                        continue
+                    status = "GONE"
                 bal = balances.get(t.base_asset, {"free": 0.0, "locked": 0.0})
                 held = bal["free"] + bal["locked"]
                 price = self.client.price(t.symbol)
                 if held < t.quantity:
-                    if held * price < float(filters.min_notional or 0) or held <= 0:
+                    if t.quantity * t.entry_price < 0.5 * t.entry_quote:
+                        self.flag_review(f"{t.symbol} (#{t.id}): kayıtlı miktar maliyetle tutarsız")
+                        messages.append(f"{t.symbol}: kayıt tutarsız, inceleme gerekiyor")
+                        continue
+                    if held <= 0 or held * price < float(filters.min_notional or 0):
                         est = FillResult(price, t.quantity, t.quantity * price * (1 - self.orders.fee_rate),
                                          t.quantity * price * self.orders.fee_rate)
                         if t.stop_order_id:
                             self.orders.cancel_stop(t.symbol, t.stop_order_id, t.base_asset)
                         self._finalize_close(t, est, "EXTERNAL_CLOSE",
-                                             note="Varlık hesapta bulunamadı; harici olarak kapatılmış")
-                        messages.append(f"{t.symbol}: varlık hesapta yok, harici kapanış olarak işlendi")
+                                             note="Varlık hesapta bulunamadı; harici olarak kapatılmış "
+                                                  "(PNL piyasa fiyatıyla tahmini)")
+                        messages.append(f"{t.symbol}: varlık hesapta yok, harici kapanış olarak işlendi "
+                                        f"(PNL tahmini)")
                         continue
-                    t.quantity = float(filters.round_qty(held))
-                    t.notes = (t.notes or "") + " | Miktar senkronizasyonla düşürüldü"
-                    messages.append(f"{t.symbol}: miktar hesap bakiyesine göre güncellendi ({t.quantity})")
+                    if held >= t.quantity * (1 - QTY_TOLERANCE):
+                        # komisyon/yuvarlama farkı: miktar düzeltilir, maliyet aynı kalır
+                        t.quantity = float(filters.round_qty(held))
+                        messages.append(f"{t.symbol}: miktar hesap bakiyesine göre güncellendi ({t.quantity})")
+                    else:
+                        # kalıcı eksik: dışarıda satılan kısım tahmini fiyatla ayrı kaydedilir,
+                        # kalan miktar ve oransal maliyet açık kalır
+                        gone = t.quantity - held
+                        est = FillResult(price, gone, gone * price * (1 - self.orders.fee_rate),
+                                         gone * price * self.orders.fee_rate)
+                        self._record_partial(t, est, "EXTERNAL")
+                        t.quantity = float(filters.round_qty(held))
+                        messages.append(f"{t.symbol}: {gone:.8g} adet hesapta yok (harici satış?); "
+                                        f"kalan {t.quantity:.8g} açık, satılan kısım PNL'i tahmini")
                 if status in ("NONE", "GONE"):
                     t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
                     messages.append(f"{t.symbol}: koruyucu stop emri yeniden yerleştirildi")
@@ -362,6 +398,10 @@ class BotEngine:
         if self.regime is not None and not self.regime.allows_new_trades:
             self._set_reason(f"Piyasa rejimi {self.regime.regime.value}: yeni işlem durduruldu")
             return
+        flags = self.review_flags()
+        if flags:
+            self._set_reason(f"İnceleme gerekiyor, yeni işlem açılmıyor: {flags[0]}")
+            return
         check = self.risk.can_open_trade(now, open_count, day_start_equity, unrealized, self.emergency)
         if not check.allowed:
             self._set_reason(check.reason)
@@ -412,15 +452,18 @@ class BotEngine:
         size = self.risk.position_size(snap.equity_quote, snap.quote_free, est_entry, est_stop, size_mult)
         if not size.ok:
             return False, size.reason
+        pre_free = self._free_balance(filters.base_asset) if self.s.is_live else None
         try:
             fill = self.orders.buy(cand.symbol, size.quantity, filters)
         except OrderError as exc:
             return False, str(exc)
 
+        # Miktar ve maliyetin TEK kaynağı borsanın gerçekleşme raporudur. Bakiye borsada geç
+        # yansıyabilir (ve eski toz bakiye içerebilir); bu yüzden bakiyeye göre miktar
+        # KÜÇÜLTÜLMEZ. Burada yalnızca yeni bakiyenin yansıması kısa süre beklenir.
         if self.s.is_live:
-            held = self._free_balance(filters.base_asset, retries=3)
-            if held and 0 < held < fill.quantity:
-                fill.quantity = held
+            expected = (pre_free or 0.0) + fill.quantity * (1 - QTY_TOLERANCE)
+            self._free_balance(filters.base_asset, retries=5, minimum=expected)
         stop = self._entry_stop(fill.avg_price, cand)
         trade = Trade(
             symbol=cand.symbol, base_asset=filters.base_asset, mode=self.book, status="OPEN",
@@ -438,6 +481,13 @@ class BotEngine:
 
         if self.s.is_live and self.s.place_exchange_stop:
             order_id, stop_px = self._safe_place_stop(trade, filters)
+            if order_id is None and self._last_stop_failure == "BALANCE":
+                # Bakiye henüz yansımadı: pozisyon kapatılmaz; yazılım stopu aktif, borsa
+                # stopu her döngüde yeniden denenir.
+                self.db.log_decision("SAFETY", f"{cand.symbol} borsa stopu bakiye yansıyınca konacak; "
+                                               f"yazılım stopu aktif", level="WARNING")
+                self._update_daily(utcnow(), snap.equity_quote)
+                return True, "OK (borsa stopu bekleniyor)"
             if order_id is None and filters.supports("STOP_LOSS_LIMIT"):
                 self.db.log_decision("SAFETY", f"{cand.symbol} koruyucu stop yerleştirilemedi; "
                                                f"pozisyon güvenlik için kapatılıyor", level="ERROR")
@@ -454,15 +504,20 @@ class BotEngine:
         self._update_daily(utcnow(), snap.equity_quote)
         return True, "OK"
 
-    def _free_balance(self, asset: str, retries: int = 0) -> float | None:
-        """Varlığın serbest bakiyesi (okunamazsa None). Borsa bakiyeyi geç yansıtabilir."""
+    def _free_balance(self, asset: str, retries: int = 0, minimum: float = 0.0) -> float | None:
+        """Varlığın serbest bakiyesi (okunamazsa None).
+
+        Borsa bakiyeyi geç yansıtabilir: `minimum` verilirse bakiye en az bu değere ulaşana kadar
+        `retries` kez tekrar okunur; ulaşmazsa son okunan değer döner (asla uydurulmaz).
+        """
+        free = None
         for attempt in range(retries + 1):
             try:
                 free = self.client.balances().get(asset, {}).get("free", 0.0)
             except BinanceAPIError as exc:
                 logger.warning("%s bakiyesi okunamadı: %s", asset, exc)
                 free = None
-            if free:
+            if free and free >= minimum:
                 return free
             if attempt < retries:
                 time.sleep(1)
@@ -474,41 +529,101 @@ class BotEngine:
                                self.s.stop_swing_buffer_atr, self.s.max_stop_atr)
 
     def _safe_place_stop(self, trade: Trade, filters) -> tuple[str | None, float | None]:
+        """Borsaya koruyucu stop koyar. Pozisyonun tamamını kapsamayan stop KONMAZ.
+
+        - Serbest bakiye kayıtlı miktarın %2'sinden fazla eksikse (bakiye gecikmesi, eski toz,
+          harici satış) stop konmaz, miktar/maliyet değiştirilmez; sonraki döngüde tekrar denenir.
+        - Fark %2 içindeyse (baz varlıktan kesilen komisyon/yuvarlama) stop serbest bakiye kadar
+          konur ve kayıtlı miktar buna eşitlenir (maliyet aynı kalır; komisyon maliyete dahildir).
+        """
+        self._last_stop_failure = None
+        stop_qty = trade.quantity
         if self.s.is_live and self.s.place_exchange_stop:
-            # Komisyon baz varlıktan kesildiyse kayıtlı miktar bakiyeden büyük olabilir:
-            # stop emri gerçek serbest bakiyeyle sınırlanır.
-            free = self._free_balance(trade.base_asset, retries=2)
-            if free is not None and 0 < free < trade.quantity:
-                new_qty = float(filters.round_qty(free))
-                if new_qty > 0:
-                    self.db.log_decision("STOP", f"{trade.symbol} miktarı gerçek bakiyeye göre güncellendi: "
-                                                 f"{trade.quantity:.8g} -> {new_qty:.8g}")
-                    trade.quantity = new_qty
+            need = float(filters.round_qty(trade.quantity))
+            free = self._free_balance(trade.base_asset, retries=3, minimum=need)
+            if free is None:
+                self._last_stop_failure = "BALANCE"
+                return None, None
+            if free < need:
+                if free >= trade.quantity * (1 - QTY_TOLERANCE):
+                    stop_qty = free
+                    trade.quantity = float(filters.round_qty(free))
+                else:
+                    self._last_stop_failure = "BALANCE"
+                    self._note_stop_unverified(trade, free)
+                    return None, None
         last_error = None
         for attempt in range(2):
             try:
-                result = self.orders.place_stop(trade.symbol, trade.quantity, trade.stop_price, filters)
+                result = self.orders.place_stop(trade.symbol, stop_qty, trade.stop_price, filters)
                 self._stop_errors.pop(trade.symbol, None)
+                self._unverified_cycles.pop(trade.id, None)
+                if result[0] is None and self.s.is_live and self.s.place_exchange_stop \
+                        and filters.supports("STOP_LOSS_LIMIT"):
+                    self._last_stop_failure = "ORDER"
                 return result
             except BinanceAPIError as exc:
                 last_error = str(exc)
                 logger.warning("%s stop yerleştirme hatası (deneme %d): %s", trade.symbol, attempt + 1, exc)
+        insufficient = last_error and ("insufficient" in last_error.lower() or "2202" in last_error
+                                       or "-2010" in last_error)
+        self._last_stop_failure = "BALANCE" if insufficient else "ORDER"
+        if insufficient:
+            self._note_stop_unverified(trade, None)
         if last_error and self._stop_errors.get(trade.symbol) != last_error:
             self._stop_errors[trade.symbol] = last_error
             self.db.log_decision("STOP", f"{trade.symbol} borsa stop emri yerleştirilemedi: {last_error}",
                                  level="ERROR")
         return None, None
 
+    def _note_stop_unverified(self, trade: Trade, free: float | None) -> None:
+        count = self._unverified_cycles.get(trade.id, 0) + 1
+        self._unverified_cycles[trade.id] = count
+        if count == 1:
+            self.db.log_decision("STOP", f"{trade.symbol} bakiye pozisyonu doğrulamıyor (serbest={free}, "
+                                         f"kayıt={trade.quantity:.8g}); stop konmadı, tekrar denenecek. "
+                                         f"Miktar ve maliyet korunuyor.", level="WARNING")
+        if count == MAX_UNVERIFIED_STOP_CYCLES:
+            self.flag_review(f"{trade.symbol} (#{trade.id}): borsa bakiyesi kayıtlı miktarı "
+                             f"{count} döngüdür doğrulamıyor; borsa stopu konamadı")
+
+    # ------------------------------------------------------ inceleme bayrağı
+    def review_flags(self) -> list[str]:
+        return list(self.db.get_state(REVIEW_KEY, []) or [])
+
+    def flag_review(self, message: str) -> None:
+        flags = self.review_flags()
+        if message not in flags:
+            flags.append(message)
+            self.db.set_state(REVIEW_KEY, flags)
+            self.db.log_decision("SAFETY", f"İNCELEME GEREKİYOR: {message}. Yeni işlem açılmayacak.",
+                                 level="ERROR")
+
+    def clear_review(self) -> None:
+        self.db.set_state(REVIEW_KEY, [])
+        self.db.log_decision("SAFETY", "İnceleme bayrakları temizlendi", level="WARNING")
+
     # ------------------------------------------------------ pozisyon yönetimi
     def _manage_position(self, t: Trade, filters, now: datetime) -> None:
         if self.s.is_live and t.stop_order_id:
             status, fill = self.orders.check_stop_filled(t.symbol, t.stop_order_id)
+            if status == "UNKNOWN":
+                count = self._unverified_cycles.get(-t.id, 0) + 1
+                self._unverified_cycles[-t.id] = count
+                if count == MAX_UNVERIFIED_STOP_CYCLES:
+                    self.flag_review(f"{t.symbol} (#{t.id}): borsa stop emrinin durumu {count} döngüdür "
+                                     f"okunamıyor")
+            else:
+                self._unverified_cycles.pop(-t.id, None)
             if status == "FILLED" and fill is not None:
-                self._finalize_close(t, fill, "STOP_LOSS_EXCHANGE")
-                return
-            if status == "GONE":
-                if fill is not None:
-                    t.quantity = max(0.0, t.quantity - fill.quantity)
+                t.stop_order_id = None
+                if self._apply_fill(t, fill, "STOP_LOSS_EXCHANGE", filters):
+                    return
+            if status == "GONE" or (status == "FILLED" and t.status == "OPEN"):
+                if status == "GONE" and fill is not None:
+                    self._apply_fill(t, fill, "STOP_LOSS_EXCHANGE", filters)
+                    if t.status != "OPEN":
+                        return
                 t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
                 self.db.save_trade(t)
         elif self.s.is_live and self.s.place_exchange_stop and filters.supports("STOP_LOSS_LIMIT"):
@@ -556,11 +671,9 @@ class BotEngine:
 
         if upd.changed and self.s.is_live and t.stop_order_id:
             filled = self.orders.cancel_stop(t.symbol, t.stop_order_id, t.base_asset)
-            if filled is not None and filled.quantity >= t.quantity * 0.999:
-                self._finalize_close(t, filled, "STOP_LOSS_EXCHANGE")
+            t.stop_order_id, t.stop_order_price = None, None
+            if filled is not None and self._apply_fill(t, filled, "STOP_LOSS_EXCHANGE", filters):
                 return
-            if filled is not None:
-                t.quantity = max(0.0, t.quantity - filled.quantity)
             t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
         self.db.save_trade(t)
 
@@ -603,25 +716,26 @@ class BotEngine:
         if self.s.is_live:
             filled = self.orders.cancel_stop(t.symbol, t.stop_order_id, t.base_asset)
             t.stop_order_id, t.stop_order_price = None, None
-            if filled is not None and filled.quantity >= t.quantity * 0.999:
-                self._finalize_close(t, filled, "STOP_LOSS_EXCHANGE")
+            if filled is not None and self._apply_fill(t, filled, "STOP_LOSS_EXCHANGE", filters):
                 return True
-            if filled is not None:
-                t.quantity = max(0.0, t.quantity - filled.quantity)
-            available = self._free_balance(t.base_asset, retries=2)
+            available = self._free_balance(t.base_asset, retries=2,
+                                           minimum=float(filters.round_qty(qty_part)))
         try:
             sold = self.orders.sell(t.symbol, qty_part, filters, available=available)
         except (BinanceAPIError, OrderError) as exc:
             sold = None
             self.db.log_decision("TAKE_PROFIT", f"{t.symbol} kısmi satış başarısız: {exc}", level="ERROR")
         if sold is not None and sold.quantity > 0:
-            self._record_partial(t, sold)
+            self._record_partial(t, sold, PARTIAL_TP_REASON)
             self.db.set_state(self._partial_key(t), True)
         if self.s.is_live and self.s.place_exchange_stop and t.status == "OPEN":
             t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
         return sold is not None
 
-    def _record_partial(self, t: Trade, sold: FillResult) -> None:
+    def _record_partial(self, t: Trade, sold: FillResult, reason: str = PARTIAL_TP_REASON) -> None:
+        """Satılan kısmı ayrı kapalı kayıt yapar; kalan miktar ve ORANSAL maliyet açık kalır."""
+        if not reason.startswith(PARTIAL_PREFIX):
+            reason = f"{PARTIAL_PREFIX}_{reason}"
         frac = min(sold.quantity / t.quantity, 1.0) if t.quantity else 1.0
         entry_quote = t.entry_quote * frac
         entry_ext = (t.entry_external_fee_usdt or 0.0) * frac
@@ -635,18 +749,20 @@ class BotEngine:
             stop_price=t.stop_price, highest_price=t.highest_price, exit_price=sold.avg_price,
             exit_quote=sold.quote_net, exit_fee_usdt=sold.fee_usdt,
             exit_external_fee_usdt=sold.external_fee_usdt, exit_time=utcnow(),
-            exit_order_id=sold.order_id, exit_reason=PARTIAL_TP_REASON, pnl_usdt=pnl,
+            exit_order_id=sold.order_id, exit_reason=reason, pnl_usdt=pnl,
             pnl_pct=pnl / entry_quote * 100 if entry_quote else 0.0,
-            notes=f"İşlem #{t.id} için kısmi kâr",
+            notes=f"İşlem #{t.id} için kısmi kapanış ({reason})",
         )
         self.db.add_trade(part)
         t.quantity = max(0.0, t.quantity - sold.quantity)
         t.entry_quote -= entry_quote
         t.entry_fee_usdt = (t.entry_fee_usdt or 0.0) * (1 - frac)
         t.entry_external_fee_usdt = (t.entry_external_fee_usdt or 0.0) * (1 - frac)
-        self.db.log_decision("TAKE_PROFIT", f"KISMİ KÂR {t.symbol} miktar={sold.quantity:.8g} "
-                                            f"fiyat={sold.avg_price:.8g} PNL={pnl:.4f} {self.quote}; "
-                                            f"kalan={t.quantity:.8g}")
+        category = "TAKE_PROFIT" if reason == PARTIAL_TP_REASON else "TRADE"
+        label = "KISMİ KÂR" if reason == PARTIAL_TP_REASON else f"KISMİ KAPANIŞ ({reason})"
+        self.db.log_decision(category, f"{label} {t.symbol} miktar={sold.quantity:.8g} "
+                                       f"fiyat={sold.avg_price:.8g} PNL={pnl:.4f} {self.quote}; "
+                                       f"kalan={t.quantity:.8g}")
         if self.snapshot is not None:
             self._update_daily(utcnow(), self.snapshot.equity_quote)
 
@@ -659,29 +775,66 @@ class BotEngine:
     def close_trade(self, t: Trade, reason: str) -> bool:
         with self._lock:
             filters = self.client.get_filters(t.symbol)
+            self._check_consistency(t)
             filled = self.orders.cancel_stop(t.symbol, t.stop_order_id, t.base_asset)
-            remaining = t.quantity - (filled.quantity if filled else 0.0)
+            t.stop_order_id, t.stop_order_price = None, None
+            if filled is not None and self._apply_fill(t, filled, reason, filters):
+                return True
+            remaining = t.quantity
             available = None
             if self.s.is_live:
-                bal = self.client.balances().get(t.base_asset, {"free": 0.0})
-                available = bal["free"]
-            sold = None
-            if remaining > 0:
-                sold = self.orders.sell(t.symbol, remaining, filters, available=available)
-            fill = FillResult.combine(filled, sold)
-            if fill is None:
-                bid = float(self.client.book_ticker(t.symbol)["bidPrice"])
-                if remaining > 0 and remaining * bid >= float(filters.min_notional or 0):
-                    # Gerçek bir pozisyon satılamadı: kayıt AÇIK kalır, sonraki döngüde tekrar denenir
-                    t.stop_order_id = None
-                    self.db.save_trade(t)
-                    raise OrderError(f"{t.symbol} satılamadı (bakiye={available}); pozisyon açık "
-                                     f"bırakıldı, tekrar denenecek")
-                fill = FillResult(bid, 0.0, 0.0, 0.0)
-                self._finalize_close(t, fill, reason, note="Satılamayan toz bakiye; değer 0 kabul edildi")
-            else:
-                self._finalize_close(t, fill, reason)
+                available = self._free_balance(t.base_asset, retries=2,
+                                               minimum=float(filters.round_qty(remaining)))
+            sold = self.orders.sell(t.symbol, remaining, filters, available=available) if remaining > 0 else None
+            if sold is not None and sold.quantity > 0:
+                if self._apply_fill(t, sold, reason, filters):
+                    return True
+                # Eksik satış: satılan kısım kaydedildi, kalan miktar/maliyet AÇIK; stop yeniden konur
+                t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
+                self.db.save_trade(t)
+                self.db.log_decision("SAFETY", f"{t.symbol} kısmen satıldı; kalan {t.quantity:.8g} açık "
+                                               f"tutuluyor", level="ERROR")
+                return False
+            bid = float(self.client.book_ticker(t.symbol)["bidPrice"])
+            if self._is_dust(t.quantity, bid, filters):
+                # Gerçek toz: satılamaz; değeri piyasa fiyatıyla tahmin edilerek kapatılır
+                est = FillResult(bid, t.quantity, t.quantity * bid * (1 - self.orders.fee_rate), 0.0)
+                self._finalize_close(t, est, reason, note="Satılamayan toz bakiye; değer tahmini")
+                return True
+            # Gerçek bir pozisyon satılamadı: kayıt AÇIK kalır, sonraki döngüde tekrar denenir
+            self.db.save_trade(t)
+            raise OrderError(f"{t.symbol} satılamadı (serbest bakiye={available}); pozisyon açık "
+                             f"bırakıldı, tekrar denenecek")
+
+    @staticmethod
+    def _is_dust(qty: float, price: float, filters) -> bool:
+        return qty <= 0 or qty * price < float(filters.min_notional or 0) \
+            or float(filters.round_qty(qty, market=True)) <= 0
+
+    def _check_consistency(self, t: Trade) -> None:
+        """Kayıtlı miktar ile maliyet birbirini tutmuyorsa otomatik kapanışı engeller."""
+        if t.entry_quote > 0 and t.entry_price > 0 and t.quantity * t.entry_price < 0.5 * t.entry_quote:
+            msg = (f"{t.symbol} (#{t.id}): kayıtlı miktar ({t.quantity:.8g}) maliyetle "
+                   f"({t.entry_quote:.4f}) tutarsız")
+            self.flag_review(msg)
+            raise ReviewRequired(msg + "; otomatik kapanış yapılmadı")
+
+    def _apply_fill(self, t: Trade, fill: FillResult, reason: str, filters) -> bool:
+        """Bir satış dolumunu uygular. Pozisyon tamamen kapandıysa True.
+
+        Dolum kayıtlı miktarın tamamını (komisyon/yuvarlama payı ve satılamaz toz hariç)
+        kapsıyorsa işlem kapatılır; kapsamıyorsa satılan kısım oransal maliyetle ayrı kayıt
+        olur ve kalan pozisyon açık kalır.
+        """
+        self._check_consistency(t)
+        leftover = t.quantity - fill.quantity
+        price = fill.avg_price or t.entry_price
+        if leftover <= t.quantity * QTY_TOLERANCE or self._is_dust(leftover, price, filters):
+            self._finalize_close(t, fill, reason)
             return True
+        self._record_partial(t, fill, reason)
+        self.db.save_trade(t)
+        return False
 
     def _finalize_close(self, t: Trade, fill: FillResult, reason: str, note: str | None = None) -> None:
         t.status = "CLOSED"
@@ -856,5 +1009,6 @@ class BotEngine:
             "consecutive_losses": streak,
             "cooldown_until": cooldown.isoformat() if cooldown and cooldown > now else None,
             "holding_decisions": [d.to_dict() for d in self.holding_decisions],
+            "review_required": self.review_flags(),
             "settings": self.s.public_summary(),
         }

@@ -216,6 +216,30 @@ girin. Bilgisayarın IP'sini PowerShell'de `ipconfig` ile ("IPv4 Address") öğr
 Windows güvenlik duvarı izin isterse "Özel ağlar" için izin verin. Paneli internete (modemden port
 yönlendirme ile) açmayın.
 
+## Kayıt güvenliği ve onarım
+
+Bot pozisyon miktarını ve maliyetini **yalnızca borsanın gerçekleşme raporundan** alır. Borsa
+bakiyesi geç yansıyabileceği (ve eski toz bakiye içerebileceği) için bakiyeye bakarak miktar
+küçültülmez; yalnızca %2'ye kadar komisyon/yuvarlama farkı düzeltilir. Ayrıca:
+- Pozisyonun tamamını kapsamayan borsa stopu konmaz; bakiye doğrulanana kadar beklenir
+  (yazılım stopu aktif). 10 döngü doğrulanamazsa **"İnceleme gerekiyor"** bayrağı açılır ve yeni
+  işlem açılmaz.
+- Eksik satışta satılan kısım oransal maliyetle ayrı kaydedilir, kalan pozisyon açık kalır.
+- Miktarı maliyetle tutarsız bir kayıt **otomatik kapatılmaz**; inceleme istenir.
+- Stop emrinin durumu okunamazsa emir var kabul edilir, ikinci stop konmaz.
+
+Hatalı bir kaydı düzeltmek için (bot KAPALIYKEN, proje klasöründe):
+```powershell
+python -m tools.repair_trades list                       # son işlemler, şüpheliler işaretli
+python -m tools.repair_trades show --id 7                # bir işlemin tüm alanları
+python -m tools.repair_trades reopen --id 7 --quantity 5045.9            # önizleme
+python -m tools.repair_trades reopen --id 7 --quantity 5045.9 --apply    # yedek alır, uygular
+python -m tools.repair_trades set-exit --id 7 --exit-quote 1650.25 --exit-price 0.3268 --apply
+python -m tools.repair_trades clear-review --apply
+```
+Araç kayıt silmez; `--apply` olmadan hiçbir şey değiştirmez ve uygulamadan önce
+`data/bot.db.yedek-TARIH` yedeği alır.
+
 ## Web panel
 
 **http://127.0.0.1:8000** (Docker'da da aynı adres)

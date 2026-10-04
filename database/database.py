@@ -139,7 +139,7 @@ class Database:
         with self.session() as s:
             q = select(func.count(Trade.id)).where(
                 Trade.entry_time >= since,
-                or_(Trade.exit_reason.is_(None), Trade.exit_reason != PARTIAL_TP_REASON),
+                or_(Trade.exit_reason.is_(None), ~Trade.exit_reason.like("PARTIAL%")),
             )
             if mode:
                 q = q.where(Trade.mode == mode)

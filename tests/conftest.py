@@ -260,3 +260,9 @@ def db():
 @pytest.fixture
 def fake():
     return FakeClient()
+
+
+@pytest.fixture(autouse=True)
+def _no_engine_sleep(monkeypatch):
+    """Bakiye bekleme döngülerindeki time.sleep testleri yavaşlatmasın."""
+    monkeypatch.setattr("bot.engine.time.sleep", lambda _s: None)

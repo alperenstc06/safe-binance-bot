@@ -15,6 +15,7 @@ COPY api ./api
 COPY bot ./bot
 COPY binance_client ./binance_client
 COPY database ./database
+COPY tools ./tools
 
 RUN useradd --create-home botuser && mkdir -p /app/data /app/logs && chown -R botuser /app
 USER botuser

@@ -63,6 +63,12 @@
     </div>
   </div>
 
+  <div class="card" id="review-card" style="display:none;border-color:var(--red)">
+    <h2 style="color:var(--red)">⚠️ İnceleme gerekiyor</h2>
+    <div id="review-list"></div>
+    <div class="muted" style="margin-top:6px">Bot yeni işlem açmıyor. Binance'teki gerçek bakiye ve emirleri kontrol edin; onarım için README'deki "Kayıt onarımı" bölümüne bakın.</div>
+  </div>
+
   <div class="card">
     <h2>Neden işlem açılmadı / son karar</h2>
     <div class="reason" id="reason">—</div>
@@ -213,6 +219,9 @@ async function refresh() {
     $("b-emg").style.display = s.emergency_stop ? "" : "none";
     $("reset-emg").style.display = s.emergency_stop ? "" : "none";
     $("reason").textContent = s.no_trade_reason || "—";
+    const rv = s.review_required || [];
+    $("review-card").style.display = rv.length ? "" : "none";
+    $("review-list").innerHTML = rv.map(x => `<div>• ${esc(x)}</div>`).join("");
     $("cycle").textContent = "Son döngü: " + (s.last_cycle_at || "—") + (s.last_error ? " | Hata: " + s.last_error : "") + (s.cooldown_until ? " | Soğuma: " + s.cooldown_until : "");
     $("equity").textContent = num(s.equity_usdt, 2); $("usdt").textContent = num(s.quote_free ?? s.usdt_free, 2);
     document.querySelectorAll(".q").forEach(el => { el.textContent = s.quote_asset || "USDT"; });

@@ -343,7 +343,7 @@ class BinanceTRClient:
     def get_order(self, symbol: str, order_id: int | str) -> dict:
         order = self._order_detail(order_id)
         if not order:
-            raise BinanceAPIError(f"Binance TR emri bulunamadı: {order_id}")
+            raise BinanceAPIError(f"Binance TR emri bulunamadı: {order_id}", code=-2013)
         return normalize_order(order, symbol)
 
     def open_orders(self, symbol: str | None = None) -> list[dict]:
