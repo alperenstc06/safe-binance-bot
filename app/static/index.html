@@ -156,6 +156,29 @@ async function resetEmergency() {
   try { await api("emergency-reset", "POST", {confirm: text}); msg("Acil durum sıfırlandı"); refresh(); } catch (e) { msg(e.message, true); }
 }
 
+const STABLES = ["USDT","USDC","FDUSD","TUSD","DAI","USDP","BUSD"];
+function renderHoldings(s) {
+  const acc = s.account_status || {};
+  const empty = text => `<tr><td colspan="5" class="muted">${esc(text)}</td></tr>`;
+  if (!acc.has_api_keys) return empty("API anahtarı yüklenmedi: .env içine BINANCE_API_KEY ve BINANCE_API_SECRET girip botu yeniden başlatın.");
+  if (acc.error) return empty("Binance hesabı okunamadı: " + acc.error);
+  const rp = s.real_portfolio;
+  if (!rp) return empty("Hesap henüz okunmadı; ilk tarama bitince (1-2 dk) görünecek.");
+  const decisions = {};
+  (s.holding_decisions || []).forEach(d => { decisions[d.asset] = d; });
+  const rows = (rp.assets || []).map(a => {
+    const d = decisions[a.asset];
+    let decision = "—", reason = "", score = "—";
+    if (d) { decision = d.decision + (d.executable ? " (uygulanacak)" : ""); reason = d.reason; score = d.score == null ? "—" : num(d.score, 1); }
+    else if (STABLES.includes(a.asset)) reason = "Stablecoin / nakit - karar gerekmez";
+    else if (!a.price_usdt) reason = "USDT fiyatı bulunamadı";
+    else reason = "Küçük bakiye - değerlendirilmedi (MIN_HOLDING_VALUE_USDT)";
+    return `<tr><td>${esc(a.asset)}</td><td>${num(a.value_usdt, 2)}</td><td>${score}</td><td>${esc(decision)}</td><td style="white-space:normal">${esc(reason)}</td></tr>`;
+  });
+  return rows.length ? rows.join("") + `<tr><td><b>Toplam</b></td><td><b>${num(rp.equity_usdt, 2)}</b></td><td colspan="3" class="muted">Yalnızca Spot cüzdan okunur (Funding/Earn hariç)</td></tr>`
+                     : empty("Binance Spot cüzdanınız boş. Funding/Earn hesabındaki varlıklar okunmaz; Spot'a aktarabilirsiniz.");
+}
+
 async function refresh() {
   try {
     const s = await api("status");
@@ -172,8 +195,7 @@ async function refresh() {
     $("tcount").textContent = s.trades_today + " / " + s.settings.max_daily_trades;
     $("losses").textContent = s.consecutive_losses + " / " + s.settings.max_consecutive_losses;
     $("positions").innerHTML = s.positions.length ? s.positions.map(p => `<tr><td>${esc(p.symbol)}</td><td>${num(p.quantity,8)}</td><td>${num(p.entry_price,8)}</td><td>${num(p.current_price,8)}</td><td>${num(p.stop_price,8)}</td><td>${p.trailing_active ? num(p.trailing_stop,8) : "pasif"}</td><td class="${p.pnl_usdt>=0?"pos":"neg"}">${num(p.pnl_usdt,2)}</td><td class="${p.pnl_pct>=0?"pos":"neg"}">${num(p.pnl_pct,2)}%</td><td>${num(p.score_at_entry,1)}</td></tr>`).join("") : `<tr><td colspan="9" class="muted">Açık pozisyon yok</td></tr>`;
-    const hd = s.holding_decisions || [];
-    $("holdings").innerHTML = hd.length ? hd.map(h => `<tr><td>${esc(h.asset)}</td><td>${num(h.value_usdt,2)}</td><td>${h.score==null?"—":num(h.score,1)}</td><td>${esc(h.decision)}${h.executable?" (uygulanacak)":""}</td><td>${esc(h.reason)}</td></tr>`).join("") : `<tr><td colspan="5" class="muted">Hesap verisi yok (DRY_RUN ve API anahtarı yoksa gerçek varlıklar okunmaz)</td></tr>`;
+    $("holdings").innerHTML = renderHoldings(s);
   } catch (e) { msg("Durum alınamadı: " + e.message, true); }
   try {
     const sig = await api("signals");

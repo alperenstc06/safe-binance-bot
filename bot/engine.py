@@ -252,7 +252,11 @@ class BotEngine:
         best = scan.best
 
         # Mevcut (bot dışı) varlıklar için kararlar
+        prev_error = self.portfolio.last_account_error
         self.real_snapshot = self.snapshot if self.s.is_live else self.portfolio.real_snapshot(self.prices)
+        error = self.portfolio.last_account_error
+        if error and error != prev_error:
+            self.db.log_decision("ACCOUNT", f"Binance hesap bakiyesi okunamadı: {error}", level="ERROR")
         if self.real_snapshot is not None:
             bot_assets = {t.base_asset for t in self.db.open_trades(self.mode)}
             self.holding_decisions = self.portfolio.assess_holdings(
@@ -616,6 +620,10 @@ class BotEngine:
             "usdt_free": round(snap.usdt_free, 4) if snap else None,
             "portfolio": snap.to_dict() if snap else None,
             "real_portfolio": self.real_snapshot.to_dict() if self.real_snapshot else None,
+            "account_status": {
+                "has_api_keys": self.client.has_keys,
+                "error": self.portfolio.last_account_error,
+            },
             "daily_pnl": round(self.risk.daily_pnl(now, unrealized_total), 4),
             "total_pnl": round(self.db.total_realized_pnl(self.mode) + unrealized_total, 4),
             "realized_pnl": round(self.db.total_realized_pnl(self.mode), 4),

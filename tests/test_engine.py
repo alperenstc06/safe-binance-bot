@@ -261,3 +261,23 @@ def test_rotation_happens_on_large_score_gap():
     assert old.status == "CLOSED" and old.exit_reason == "ROTATION"
     new = db.open_trades("DRY_RUN")
     assert len(new) == 1 and new[0].symbol == other
+
+
+def test_account_status_reports_real_portfolio_and_errors():
+    from binance_client.client import BinanceAPIError
+    fake = FakeClient(has_keys=True)
+    fake.balances_data["ETH"] = {"free": 0.001, "locked": 0.0}
+    engine, _, db = dry_engine(fake)
+    engine.run_cycle(force_scan=True)
+    st = engine.status()
+    assert st["account_status"] == {"has_api_keys": True, "error": None}
+    assets = {a["asset"] for a in st["real_portfolio"]["assets"]}
+    assert {"USDT", "ETH"} <= assets
+
+    def broken():
+        raise BinanceAPIError("Binance hata -2015: Invalid API-key, IP, or permissions for action.")
+    fake.balances = broken
+    engine.run_cycle(force_scan=True)
+    st = engine.status()
+    assert "Invalid API-key" in st["account_status"]["error"]
+    assert any(l.category == "ACCOUNT" for l in db.recent_logs(20))

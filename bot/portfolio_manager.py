@@ -120,15 +120,19 @@ class PortfolioManager:
         self.s = settings
         self.om = order_manager
         self._confirm: dict[str, tuple[str, int]] = {}
+        self.last_account_error: str | None = None
 
     def real_snapshot(self, prices: dict[str, float]) -> PortfolioSnapshot | None:
         if not self.client.has_keys:
             return None
         try:
-            return value_balances(self.client.balances(), prices)
+            snap = value_balances(self.client.balances(), prices)
         except BinanceAPIError as exc:
             logger.warning("Hesap bakiyesi okunamadı: %s", exc)
+            self.last_account_error = str(exc)
             return None
+        self.last_account_error = None
+        return snap
 
     def snapshot(self, prices: dict[str, float], open_trades) -> PortfolioSnapshot:
         """Bot özsermayesi: LIVE'da gerçek hesap, DRY_RUN'da kağıt hesap."""
