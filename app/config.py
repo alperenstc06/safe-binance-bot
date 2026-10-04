@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     # Kâr büyüdükçe trailing daralır: kâr >= TRAIL_TIGHTEN_AFTER_R x risk olunca bu çarpan kullanılır
     trail_tighten_after_r: float = 2.0
     trailing_atr_multiplier_tight: float = 1.2
+    # İğne (wick) önlemleri
+    wick_lookback: int = 48
+    wick_atr_threshold: float = 1.5
+    max_wick_count: int = 3
+    max_single_wick_atr: float = 3.0
+    stop_swing_buffer_atr: float = 0.2
+    max_stop_atr: float = 3.0
+    max_entry_drift_pct: float = 0.01
     # Kısmi kâr alma: fiyat giriş + PARTIAL_TP_R_MULTIPLE x risk olunca pozisyonun bir kısmı satılır
     partial_take_profit_enabled: bool = True
     partial_tp_r_multiple: float = 1.5

@@ -56,6 +56,25 @@ def initial_stop_price(entry: float, atr_value: float, atr_multiplier: float) ->
     return stop
 
 
+def wick_aware_stop(entry: float, atr_value: float, atr_multiplier: float, recent_low: float,
+                    buffer_atr: float = 0.2, max_stop_atr: float = 3.0) -> float:
+    """İğneye dayanıklı ilk stop.
+
+    Normal ATR stopu son mumların dibinin (iğneler dahil) üstünde kalıyorsa, stop o dibin
+    biraz altına alınır; böylece yakın zamanda atılmış bir iğne seviyesine stop konmaz.
+    Stop hiçbir zaman girişin `max_stop_atr` ATR'den fazla altına inmez.
+    """
+    base = initial_stop_price(entry, atr_value, atr_multiplier)
+    if recent_low <= 0 or atr_value <= 0:
+        return base
+    swing = recent_low - buffer_atr * atr_value
+    floor = entry - max_stop_atr * atr_value
+    stop = max(min(base, swing), floor)
+    if stop <= 0 or stop >= entry:
+        return base
+    return stop
+
+
 def compute_stop_update(
     entry: float,
     current_stop: float,

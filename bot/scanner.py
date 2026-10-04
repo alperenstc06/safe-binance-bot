@@ -163,6 +163,10 @@ class MarketScanner:
             max_extension_atr=self.s.max_extension_atr,
             max_last_candle_change_pct=self.s.max_last_candle_change_pct,
             min_volume=self.s.min_quote_volume_usdt,
+            max_wick_count=self.s.max_wick_count,
+            max_single_wick_atr=self.s.max_single_wick_atr,
+            wick_lookback=self.s.wick_lookback,
+            wick_atr_threshold=self.s.wick_atr_threshold,
         )
 
     def scan(self, regime: str, tickers: list[dict] | None = None,

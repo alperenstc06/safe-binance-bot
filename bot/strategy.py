@@ -117,9 +117,30 @@ class Indicators:
     volume_ratio: float
     last_candle_change_pct: float
     ema50_slope_pct: float
+    recent_low: float = 0.0       # son mumların en düşük fiyatı (iğneler dahil)
+    wick_count: int = 0           # son mumlarda ATR'ye göre uzun iğne sayısı
+    max_wick_atr: float = 0.0     # en uzun iğnenin ATR katı
 
 
-def compute_indicators(c: Candles, atr_period: int = 14) -> Indicators:
+def wick_stats(c: Candles, atr_value: float, lookback: int = 48,
+               threshold_atr: float = 1.5) -> tuple[int, float]:
+    """Son `lookback` tamamlanmış mumdaki uzun iğne sayısı ve en uzun iğnenin ATR katı."""
+    if atr_value <= 0 or len(c) < 2:
+        return 0, 0.0
+    end = len(c) - 1  # son (oluşmakta olan) mum hariç
+    start = max(0, end - lookback)
+    count, longest = 0, 0.0
+    for i in range(start, end):
+        body_low, body_high = min(c.opens[i], c.closes[i]), max(c.opens[i], c.closes[i])
+        wick = max(body_low - c.lows[i], c.highs[i] - body_high) / atr_value
+        longest = max(longest, wick)
+        if wick >= threshold_atr:
+            count += 1
+    return count, longest
+
+
+def compute_indicators(c: Candles, atr_period: int = 14, wick_lookback: int = 48,
+                       wick_threshold: float = 1.5) -> Indicators:
     closes = c.closes
     e20, e50, e200 = ema(closes, 20), ema(closes, 50), ema(closes, 200)
     r = rsi(closes, 14)
@@ -131,6 +152,7 @@ def compute_indicators(c: Candles, atr_period: int = 14) -> Indicators:
     prior_avg = sum(prior) / max(len(prior), 1)
     last_open = c.opens[-1] if c.opens[-1] else closes[-1]
     slope_base = e50[-11] if len(e50) > 11 else e50[0]
+    wicks, longest_wick = wick_stats(c, a[-1], wick_lookback, wick_threshold)
     return Indicators(
         close=closes[-1],
         ema20=e20[-1],
@@ -147,6 +169,9 @@ def compute_indicators(c: Candles, atr_period: int = 14) -> Indicators:
         volume_ratio=recent_avg / prior_avg if prior_avg > 0 else 1.0,
         last_candle_change_pct=(closes[-1] / last_open - 1) * 100,
         ema50_slope_pct=(e50[-1] / slope_base - 1) * 100 if slope_base else 0.0,
+        recent_low=min(c.lows[-12:]) if c.lows else 0.0,
+        wick_count=wicks,
+        max_wick_atr=longest_wick,
     )
 
 
@@ -175,12 +200,16 @@ def score_symbol(
     max_extension_atr: float = 2.5,
     max_last_candle_change_pct: float = 5.0,
     min_volume: float = 20_000_000,
+    max_wick_count: int = 3,
+    max_single_wick_atr: float = 3.0,
+    wick_lookback: int = 48,
+    wick_atr_threshold: float = 1.5,
 ) -> ScoreResult:
     """0-100 arası fırsat puanı ve giriş için sert kuralları değerlendirir.
 
     Hacim puanı piyasanın minimum hacim eşiğine (min_volume, USDT) göre ölçeklenir.
     """
-    ind = compute_indicators(candles)
+    ind = compute_indicators(candles, wick_lookback=wick_lookback, wick_threshold=wick_atr_threshold)
     comp: dict[str, float] = {}
     reasons: list[str] = []
 
@@ -291,6 +320,10 @@ def score_symbol(
     if ind.atr <= 0:
         eligible = False
         reasons.append("ATR hesaplanamadı")
+    if ind.wick_count > max_wick_count or ind.max_wick_atr > max_single_wick_atr:
+        eligible = False
+        reasons.append(f"Sık/uzun iğne geçmişi ({ind.wick_count} iğne, en uzun "
+                       f"{ind.max_wick_atr:.1f} ATR)")
 
     return ScoreResult(symbol=symbol, score=score, price=ind.close, atr=ind.atr,
                        components=comp, reasons=reasons, eligible=eligible, indicators=ind)

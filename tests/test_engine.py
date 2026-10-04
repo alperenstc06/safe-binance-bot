@@ -374,3 +374,29 @@ def test_partial_take_profit_live_replaces_exchange_stop():
     assert float(new_stop["origQty"]) <= t2.quantity + 1e-12
     assert float(new_stop["stopPrice"]) > t.entry_price  # stop kârda
     assert any(c[0] == "SELL" for c in fake.calls)
+
+
+def test_entry_skipped_on_spread_spike_or_price_jump():
+    engine, fake, db = dry_engine()
+    for s in ("BTCUSDT", "ETHUSDT"):
+        fake.spread[s] = 0.0001
+    real_book = fake.book_ticker
+
+    def spiky_book(symbol):  # tarama normal, emir anında spread açılıyor
+        b = real_book(symbol)
+        if engine.last_scan is not None:
+            p = fake.last_price(symbol)
+            b = {"symbol": symbol, "bidPrice": f"{p * 0.99:.8f}", "askPrice": f"{p * 1.01:.8f}"}
+        return b
+    fake.book_ticker = spiky_book
+    engine.run_cycle(force_scan=True)
+    assert not db.open_trades("DRY_RUN")
+    assert "spread" in engine.no_trade_reason.lower() or "hızlı hareket" in engine.no_trade_reason
+
+
+def test_entry_stop_respects_recent_wick():
+    engine, fake, db = dry_engine()
+    engine.run_cycle(force_scan=True)
+    t = db.open_trades("DRY_RUN")[0]
+    atr = t.atr_at_entry
+    assert t.entry_price - 3 * atr - 1e-9 <= t.initial_stop <= t.entry_price - 2 * atr + 1e-9

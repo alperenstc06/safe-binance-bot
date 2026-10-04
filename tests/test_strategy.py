@@ -74,3 +74,33 @@ def test_volume_score_scales_with_market_threshold():
     tr = score_symbol("X", c, 3e6, 0.0001, "BULL", min_volume=1e6)  # TL piyasasında yeterli
     assert usdt.components["volume_24h"] == 0
     assert tr.components["volume_24h"] == 7
+
+
+def _add_wicks(kl, count, depth):
+    """Son mumlardan bazılarına aşağı iğne ekler (depth: fiyatın oranı)."""
+    for j in range(count):
+        i = len(kl) - 3 - j * 4
+        o, c = float(kl[i][1]), float(kl[i][4])
+        kl[i] = [kl[i][0], kl[i][1], kl[i][2], f"{min(o, c) * (1 - depth):.8f}", kl[i][4]] + kl[i][5:]
+    return kl
+
+
+def test_wick_history_makes_coin_ineligible():
+    clean = score_symbol("OK", Candles.from_klines(make_klines(100)), 300e6, 0.0001, "BULL")
+    assert clean.eligible and clean.indicators.wick_count == 0
+    many = Candles.from_klines(_add_wicks(make_klines(100), 5, 0.03))
+    res = score_symbol("WICK", many, 300e6, 0.0001, "BULL")
+    assert not res.eligible and any("iğne" in r for r in res.reasons)
+    one_huge = Candles.from_klines(_add_wicks(make_klines(100), 1, 0.08))
+    res2 = score_symbol("HUGE", one_huge, 300e6, 0.0001, "BULL")
+    assert not res2.eligible and res2.indicators.max_wick_atr > 3
+
+
+def test_wick_aware_stop_goes_below_recent_low_but_capped():
+    from bot.risk_manager import wick_aware_stop
+    # normal stop 96 zaten yakın dibin (96.5) altında -> değişmez
+    assert wick_aware_stop(100, 2, 2.0, 96.5) == pytest.approx(96)
+    # yakın iğne 95'e inmiş -> stop 95 - 0.4 = 94.6
+    assert wick_aware_stop(100, 2, 2.0, 95.0) == pytest.approx(94.6)
+    # çok derin iğne -> en fazla 3 ATR (94)
+    assert wick_aware_stop(100, 2, 2.0, 80.0) == pytest.approx(94)

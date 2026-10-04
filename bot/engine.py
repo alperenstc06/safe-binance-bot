@@ -17,6 +17,7 @@ from bot.risk_manager import (
     initial_stop_price,
     stop_hit,
     utc_day_start,
+    wick_aware_stop,
 )
 from bot.scanner import MarketScanner, ScanResult
 from bot.strategy import (
@@ -388,10 +389,18 @@ class BotEngine:
                        extra_cost_pct: float = 0.0) -> tuple[bool, str]:
         filters = self.client.get_filters(cand.symbol)
         book = self.client.book_ticker(cand.symbol)
-        ask = float(book["askPrice"])
+        ask, bid = float(book["askPrice"]), float(book["bidPrice"])
+        # İğne/ani hareket önlemleri: emir anında defter ve fiyat tekrar kontrol edilir
+        if bid <= 0 or ask <= 0:
+            return False, "Emir defteri boş"
+        spread_now = (ask - bid) / ((ask + bid) / 2)
+        if spread_now > self.s.max_spread_pct:
+            return False, f"Anlık spread yüksek ({spread_now * 100:.2f}%)"
+        if cand.price > 0 and abs(ask / cand.price - 1) > self.s.max_entry_drift_pct:
+            return False, "Fiyat taramadan sonra hızlı hareket etti (iğne/ani hareket)"
         est_entry = ask * (1 + self.s.slippage_pct)
         try:
-            est_stop = initial_stop_price(est_entry, cand.atr, self.s.stop_atr_multiplier)
+            est_stop = self._entry_stop(est_entry, cand)
         except ValueError:
             return False, "Geçerli stop hesaplanamadı"
         edge = expected_edge(cand.score, est_entry, est_stop, self.s.reward_risk_ratio,
@@ -412,7 +421,7 @@ class BotEngine:
             held = self._free_balance(filters.base_asset, retries=3)
             if held and 0 < held < fill.quantity:
                 fill.quantity = held
-        stop = initial_stop_price(fill.avg_price, cand.atr, self.s.stop_atr_multiplier)
+        stop = self._entry_stop(fill.avg_price, cand)
         trade = Trade(
             symbol=cand.symbol, base_asset=filters.base_asset, mode=self.book, status="OPEN",
             quantity=fill.quantity, entry_price=fill.avg_price, entry_quote=fill.quote_net,
@@ -458,6 +467,11 @@ class BotEngine:
             if attempt < retries:
                 time.sleep(1)
         return free
+
+    def _entry_stop(self, entry: float, cand: ScoreResult) -> float:
+        recent_low = cand.indicators.recent_low if cand.indicators else 0.0
+        return wick_aware_stop(entry, cand.atr, self.s.stop_atr_multiplier, recent_low,
+                               self.s.stop_swing_buffer_atr, self.s.max_stop_atr)
 
     def _safe_place_stop(self, trade: Trade, filters) -> tuple[str | None, float | None]:
         if self.s.is_live and self.s.place_exchange_stop:
