@@ -281,3 +281,41 @@ def test_account_status_reports_real_portfolio_and_errors():
     st = engine.status()
     assert "Invalid API-key" in st["account_status"]["error"]
     assert any(l.category == "ACCOUNT" for l in db.recent_logs(20))
+
+
+def test_live_stop_quantity_capped_to_real_balance():
+    """Komisyon baz varlıktan kesilip bakiye kayıttan az kalırsa stop gerçek bakiyeyle konur."""
+    engine, fake, db = live_engine(rotation_enabled=False)
+    engine.run_cycle(force_scan=True)
+    t = db.open_trades("LIVE")[0]
+    fake.cancel_order(t.symbol, int(t.stop_order_id))
+    t.stop_order_id = None
+    db.save_trade(t)
+    base = t.base_asset
+    fake.balances_data[base]["free"] = t.quantity * 0.998  # gerçek bakiye kayıttan az
+    real_stop = fake.stop_loss_limit_sell
+
+    def strict_stop(symbol, quantity, stop_price, limit_price):
+        if float(quantity) > fake.balances_data[base]["free"] + 1e-12:
+            from binance_client.client import BinanceAPIError
+            raise BinanceAPIError("Binance TR hata 2202: Insufficient balance")
+        return real_stop(symbol, quantity, stop_price, limit_price)
+    fake.stop_loss_limit_sell = strict_stop
+    engine.run_cycle()
+    t2 = db.get_trade(t.id)
+    assert t2.status == "OPEN" and t2.stop_order_id is not None
+    assert t2.quantity <= t.quantity * 0.998 + 1e-12
+
+
+def test_restart_sync_reduces_quantity_for_small_shortfall():
+    db = Database("sqlite:///:memory:")
+    engine, fake, _ = live_engine(db=db)
+    engine.run_cycle(force_scan=True)
+    t = db.open_trades("LIVE")[0]
+    fake.cancel_order(t.symbol, int(t.stop_order_id))
+    fake.balances_data[t.base_asset]["free"] = t.quantity * 0.999
+    engine2 = BotEngine(engine.s, fake, db)
+    engine2.sync_positions()
+    t2 = db.get_trade(t.id)
+    assert t2.status == "OPEN" and t2.quantity <= t.quantity * 0.999 + 1e-12
+    assert t2.stop_order_id is not None

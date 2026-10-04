@@ -74,6 +74,7 @@ class BotEngine:
         self.real_snapshot: PortfolioSnapshot | None = None
         self.prices: dict[str, float] = {}
         self._synced = False
+        self._stop_errors: dict[str, str] = {}
 
     # ------------------------------------------------------------------ durum
     @property
@@ -188,7 +189,7 @@ class BotEngine:
                 bal = balances.get(t.base_asset, {"free": 0.0, "locked": 0.0})
                 held = bal["free"] + bal["locked"]
                 price = self.client.price(t.symbol)
-                if held < t.quantity * 0.99:
+                if held < t.quantity:
                     if held * price < float(filters.min_notional or 0) or held <= 0:
                         est = FillResult(price, t.quantity, t.quantity * price * (1 - self.orders.fee_rate),
                                          t.quantity * price * self.orders.fee_rate)
@@ -408,12 +409,9 @@ class BotEngine:
             return False, str(exc)
 
         if self.s.is_live:
-            try:
-                held = self.client.balances().get(filters.base_asset, {}).get("free", 0.0)
-                if 0 < held < fill.quantity:
-                    fill.quantity = held
-            except BinanceAPIError as exc:
-                logger.warning("Alış sonrası bakiye okunamadı: %s", exc)
+            held = self._free_balance(filters.base_asset, retries=3)
+            if held and 0 < held < fill.quantity:
+                fill.quantity = held
         stop = initial_stop_price(fill.avg_price, cand.atr, self.s.stop_atr_multiplier)
         trade = Trade(
             symbol=cand.symbol, base_asset=filters.base_asset, mode=self.book, status="OPEN",
@@ -447,12 +445,44 @@ class BotEngine:
         self._update_daily(utcnow(), snap.equity_quote)
         return True, "OK"
 
+    def _free_balance(self, asset: str, retries: int = 0) -> float | None:
+        """Varlığın serbest bakiyesi (okunamazsa None). Borsa bakiyeyi geç yansıtabilir."""
+        for attempt in range(retries + 1):
+            try:
+                free = self.client.balances().get(asset, {}).get("free", 0.0)
+            except BinanceAPIError as exc:
+                logger.warning("%s bakiyesi okunamadı: %s", asset, exc)
+                free = None
+            if free:
+                return free
+            if attempt < retries:
+                time.sleep(1)
+        return free
+
     def _safe_place_stop(self, trade: Trade, filters) -> tuple[str | None, float | None]:
+        if self.s.is_live and self.s.place_exchange_stop:
+            # Komisyon baz varlıktan kesildiyse kayıtlı miktar bakiyeden büyük olabilir:
+            # stop emri gerçek serbest bakiyeyle sınırlanır.
+            free = self._free_balance(trade.base_asset, retries=2)
+            if free is not None and 0 < free < trade.quantity:
+                new_qty = float(filters.round_qty(free))
+                if new_qty > 0:
+                    self.db.log_decision("STOP", f"{trade.symbol} miktarı gerçek bakiyeye göre güncellendi: "
+                                                 f"{trade.quantity:.8g} -> {new_qty:.8g}")
+                    trade.quantity = new_qty
+        last_error = None
         for attempt in range(2):
             try:
-                return self.orders.place_stop(trade.symbol, trade.quantity, trade.stop_price, filters)
+                result = self.orders.place_stop(trade.symbol, trade.quantity, trade.stop_price, filters)
+                self._stop_errors.pop(trade.symbol, None)
+                return result
             except BinanceAPIError as exc:
+                last_error = str(exc)
                 logger.warning("%s stop yerleştirme hatası (deneme %d): %s", trade.symbol, attempt + 1, exc)
+        if last_error and self._stop_errors.get(trade.symbol) != last_error:
+            self._stop_errors[trade.symbol] = last_error
+            self.db.log_decision("STOP", f"{trade.symbol} borsa stop emri yerleştirilemedi: {last_error}",
+                                 level="ERROR")
         return None, None
 
     # ------------------------------------------------------ pozisyon yönetimi
