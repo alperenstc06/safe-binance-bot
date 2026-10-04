@@ -31,3 +31,11 @@ def test_scan_filters_and_scores(fake):
     assert "pump/dump" in res.rejected["SOLUSDT"]
     assert res.best is not None and res.best.symbol == "BTCUSDT"
     assert all(0 <= s.score <= 100 for s in res.scored)
+
+
+def test_scan_summary_reports_rejections(fake):
+    scanner = MarketScanner(fake, make_settings(min_quote_volume_usdt=1e12))
+    res = scanner.scan("BULL")
+    assert not res.scored
+    text = res.summary()
+    assert "taranabilir parite" in text and "Düşük hacim" in text

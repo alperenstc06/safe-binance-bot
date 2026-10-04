@@ -369,7 +369,8 @@ class BotEngine:
         if not candidates:
             top = scan.scored[0] if scan.scored else None
             msg = (f"Uygun fırsat yok: en yüksek puan {top.symbol} {top.score:.1f} "
-                   f"(gereken ≥ {min_score:.0f})" if top else "Uygun fırsat yok: aday coin bulunamadı")
+                   f"(gereken ≥ {min_score:.0f})" if top else
+                   f"Uygun fırsat yok: aday coin bulunamadı ({scan.summary()})")
             self._set_reason(msg)
             return
 

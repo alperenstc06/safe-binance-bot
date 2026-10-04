@@ -47,6 +47,18 @@ class ScanResult:
     universe_size: int = 0
     market: dict[str, tuple[float, float]] = field(default_factory=dict)  # sembol -> (hacim, spread)
 
+    tickers_matched: int = 0
+
+    def summary(self) -> str:
+        """Tarama özeti: evren büyüklüğü ve eleme sebeplerinin sayıları."""
+        counts: dict[str, int] = {}
+        for reason in self.rejected.values():
+            key = reason.split(" (")[0].split(":")[0]
+            counts[key] = counts.get(key, 0) + 1
+        parts = [f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:4]]
+        text = f"taranabilir parite {self.universe_size}, piyasa verisi bulunan {self.tickers_matched}"
+        return text + (" | elenen: " + ", ".join(parts) if parts else "")
+
     @property
     def best(self) -> ScoreResult | None:
         eligible = [s for s in self.scored if s.eligible]
@@ -156,6 +168,7 @@ class MarketScanner:
         tickers = tickers if tickers is not None else self.client.ticker_24h_all()
         books = books if books is not None else self.client.book_tickers()
         result.market = self.market_data(tickers, books, fx)
+        result.tickers_matched = sum(1 for t in tickers if t.get("symbol") in universe)
         candidates, rejected = self.prefilter(tickers, books, universe, fx)
         result.rejected.update(rejected)
         for sym, qv, spread in candidates:

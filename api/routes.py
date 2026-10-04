@@ -59,6 +59,14 @@ def trades(limit: int = 50, engine: BotEngine = Depends(get_engine)) -> list[dic
 
 @router.get("/signals")
 def signals(limit: int = 15, engine: BotEngine = Depends(get_engine)) -> list[dict]:
+    scan = engine.last_scan
+    if scan is not None:  # bu oturumdaki son tarama (eski kayıtlar karışmasın)
+        regime = engine.regime.regime.value if engine.regime else ""
+        return [
+            {"symbol": s.symbol, "score": s.score, "price": s.price, "eligible": s.eligible,
+             "regime": regime, "components": s.components, "reasons": s.reasons, "created_at": None}
+            for s in scan.scored[: min(limit, 50)]
+        ]
     return [
         {"symbol": s.symbol, "score": s.score, "price": s.price, "eligible": s.eligible,
          "regime": s.regime, "components": s.components, "reasons": s.reasons,
