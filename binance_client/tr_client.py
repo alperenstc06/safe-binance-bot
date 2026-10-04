@@ -287,10 +287,25 @@ class BinanceTRClient:
             "symbol": self.tr_symbol(symbol), "side": SIDE_CODES[side],
             "type": TYPE_CODES["MARKET"], "quantity": fmt_decimal(quantity),
         }, signed=True, retries=0)
-        order = self._wait_fill(order)
+        try:
+            order = self._wait_fill(order)
+        except BinanceAPIError as exc:
+            # Emir borsaya ULAŞTI; yalnızca durum sorgusu başarısız. Pozisyonun kayıtsız (stopsuz)
+            # kalmaması için piyasa emrinin tamamen dolduğu varsayılır; motor miktarı gerçek
+            # bakiyeyle ayrıca doğrular.
+            logger.error("Binance TR emir durumu okunamadı (emir gönderildi): %s", exc)
+            order = dict(order, status=2)
         norm = normalize_order(order, symbol)
         executed = float(norm["executedQty"])
         quote = float(norm["cummulativeQuoteQty"])
+        if executed <= 0 and str(order.get("status")) == "2":
+            # Dolum bilgisi yoksa istenen miktar ve güncel defter fiyatı kullanılır
+            book = self.market.book_ticker(symbol)
+            ref = float(book["askPrice"] if side == "BUY" else book["bidPrice"])
+            executed = float(quantity)
+            quote = executed * ref
+            norm["executedQty"], norm["cummulativeQuoteQty"] = str(executed), str(quote)
+            norm["status"] = "FILLED"
         fills = self._order_commission(norm["orderId"], symbol) if executed > 0 else []
         if not fills and executed > 0:
             # Komisyon detayı alınamazsa taker oranıyla tahmin edilir: alışta baz varlıktan,

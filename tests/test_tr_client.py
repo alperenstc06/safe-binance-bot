@@ -259,3 +259,18 @@ def test_config_tr_live_requires_tr_keys():
     assert s.is_tr and s.has_trading_keys
     with pytest.raises(ValidationError):
         make_settings(trading_exchange="KRAKEN")
+
+
+def test_market_order_tracked_even_if_status_query_fails():
+    client, session, market = make_tr()
+    real_get = session.get
+
+    def failing_get(url, headers=None, timeout=None):
+        if "/open/v1/orders/" in url:
+            return Resp({"code": -1, "msg": "internal error", "data": None})
+        return real_get(url, headers=headers, timeout=timeout)
+    session.get = failing_get
+    resp = client.market_buy("ETHUSDT", Decimal("0.05"))
+    assert resp["status"] == "FILLED"
+    assert float(resp["executedQty"]) == pytest.approx(0.05)
+    assert float(resp["cummulativeQuoteQty"]) > 0
