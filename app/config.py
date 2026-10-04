@@ -161,6 +161,9 @@ class Settings(BaseSettings):
         if self.is_tr and "quote_asset" not in self.model_fields_set:
             self.quote_asset = "TRY"
         self.quote_asset = self.quote_asset.strip().upper()
+        # TL piyasasının hacmi USDT piyasasından çok düşüktür: TR için varsayılan eşik 1M USDT
+        if self.is_tr and "min_quote_volume_usdt" not in self.model_fields_set:
+            self.min_quote_volume_usdt = 1_000_000.0
         if self.trading_mode == TradingMode.LIVE and not self.has_trading_keys:
             names = ("BINANCE_TR_API_KEY ve BINANCE_TR_API_SECRET" if self.is_tr
                      else "BINANCE_API_KEY ve BINANCE_API_SECRET")

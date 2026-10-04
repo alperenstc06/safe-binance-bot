@@ -48,6 +48,7 @@ class ScanResult:
     market: dict[str, tuple[float, float]] = field(default_factory=dict)  # sembol -> (hacim, spread)
 
     tickers_matched: int = 0
+    top_volume: tuple[str, float] | None = None
 
     def summary(self) -> str:
         """Tarama özeti: evren büyüklüğü ve eleme sebeplerinin sayıları."""
@@ -57,6 +58,9 @@ class ScanResult:
             counts[key] = counts.get(key, 0) + 1
         parts = [f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:4]]
         text = f"taranabilir parite {self.universe_size}, piyasa verisi bulunan {self.tickers_matched}"
+        if self.top_volume:
+            sym, vol = self.top_volume
+            text += f", en yüksek hacim {sym} ≈ {vol / 1e6:.1f}M USDT"
         return text + (" | elenen: " + ", ".join(parts) if parts else "")
 
     @property
@@ -158,6 +162,7 @@ class MarketScanner:
             max_spread_pct=self.s.max_spread_pct,
             max_extension_atr=self.s.max_extension_atr,
             max_last_candle_change_pct=self.s.max_last_candle_change_pct,
+            min_volume=self.s.min_quote_volume_usdt,
         )
 
     def scan(self, regime: str, tickers: list[dict] | None = None,
@@ -169,6 +174,8 @@ class MarketScanner:
         books = books if books is not None else self.client.book_tickers()
         result.market = self.market_data(tickers, books, fx)
         result.tickers_matched = sum(1 for t in tickers if t.get("symbol") in universe)
+        vols = [(s, v[0]) for s, v in result.market.items() if s in universe]
+        result.top_volume = max(vols, key=lambda x: x[1]) if vols else None
         candidates, rejected = self.prefilter(tickers, books, universe, fx)
         result.rejected.update(rejected)
         for sym, qv, spread in candidates:

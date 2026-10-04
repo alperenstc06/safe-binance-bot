@@ -66,3 +66,11 @@ def test_regime_adjustments():
     assert regime_adjustments(Regime.NEUTRAL, 0.5, 5) == (0.5, 5)
     assert regime_adjustments(Regime.BEAR, 0.5, 5)[0] == 0.0
     assert regime_adjustments(Regime.HIGH_VOLATILITY, 0.5, 5)[0] == 0.0
+
+
+def test_volume_score_scales_with_market_threshold():
+    c = Candles.from_klines(make_klines(100))
+    usdt = score_symbol("X", c, 3e6, 0.0001, "BULL")  # 20M eşiğinde düşük hacim
+    tr = score_symbol("X", c, 3e6, 0.0001, "BULL", min_volume=1e6)  # TL piyasasında yeterli
+    assert usdt.components["volume_24h"] == 0
+    assert tr.components["volume_24h"] == 7

@@ -273,6 +273,9 @@ def test_config_tr_live_requires_tr_keys():
     assert s.is_tr and s.has_trading_keys and s.quote_asset == "TRY"
     assert make_settings().quote_asset == "USDT"
     assert tr_settings(quote_asset="usdt").quote_asset == "USDT"
+    assert s.min_quote_volume_usdt == 1_000_000
+    assert make_settings().min_quote_volume_usdt == 20_000_000
+    assert tr_settings(min_quote_volume_usdt=5e6).min_quote_volume_usdt == 5e6
     with pytest.raises(ValidationError):
         make_settings(trading_exchange="KRAKEN")
 

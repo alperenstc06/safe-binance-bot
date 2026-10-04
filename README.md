@@ -114,7 +114,7 @@ Her taramada (`SCAN_INTERVAL_SECONDS`, varsayılan 5 dk) tüm Spot USDT paritele
 - işlem durumu `TRADING` olmayan semboller (delist süreci) ve `SYMBOL_BLACKLIST`
   (delist uyarısı gelen varlıkları buraya ekleyin)
 - stablecoin/stablecoin çiftleri, leveraged tokenlar (`UP/DOWN/BULL/BEAR`)
-- düşük 24s hacim (`MIN_QUOTE_VOLUME_USDT`), yüksek spread (`MAX_SPREAD_PCT`)
+- düşük 24s hacim (`MIN_QUOTE_VOLUME_USDT`; Global'de 20M, Binance TR'de 1M USDT karşılığı), yüksek spread (`MAX_SPREAD_PCT`)
 - aşırı pump/dump (`MAX_ABS_24H_CHANGE_PCT`), son mumda aşırı hareket
 - yeni listelenmiş (`MIN_LISTING_DAYS`) ve kısa fiyat geçmişi olan coinler
 

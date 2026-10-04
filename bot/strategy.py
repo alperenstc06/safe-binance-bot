@@ -174,8 +174,12 @@ def score_symbol(
     max_spread_pct: float = 0.0015,
     max_extension_atr: float = 2.5,
     max_last_candle_change_pct: float = 5.0,
+    min_volume: float = 20_000_000,
 ) -> ScoreResult:
-    """0-100 arası fırsat puanı ve giriş için sert kuralları değerlendirir."""
+    """0-100 arası fırsat puanı ve giriş için sert kuralları değerlendirir.
+
+    Hacim puanı piyasanın minimum hacim eşiğine (min_volume, USDT) göre ölçeklenir.
+    """
     ind = compute_indicators(candles)
     comp: dict[str, float] = {}
     reasons: list[str] = []
@@ -232,11 +236,11 @@ def score_symbol(
         reasons.append("Volatilite yüksek")
 
     # 24s hacim (10)
-    if quote_volume_24h >= 200_000_000:
+    if quote_volume_24h >= 10 * min_volume:
         comp["volume_24h"] = 10
-    elif quote_volume_24h >= 50_000_000:
+    elif quote_volume_24h >= 2.5 * min_volume:
         comp["volume_24h"] = 7
-    elif quote_volume_24h >= 20_000_000:
+    elif quote_volume_24h >= min_volume:
         comp["volume_24h"] = 4
     else:
         comp["volume_24h"] = 0
