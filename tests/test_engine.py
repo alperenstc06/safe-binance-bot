@@ -319,3 +319,58 @@ def test_restart_sync_reduces_quantity_for_small_shortfall():
     t2 = db.get_trade(t.id)
     assert t2.status == "OPEN" and t2.quantity <= t.quantity * 0.999 + 1e-12
     assert t2.stop_order_id is not None
+
+
+def test_partial_take_profit_dry_run():
+    engine, fake, db = dry_engine(rotation_enabled=False)
+    engine.run_cycle(force_scan=True)
+    t = db.open_trades("DRY_RUN")[0]
+    r = t.entry_price - t.initial_stop
+    qty0, quote0 = t.quantity, t.entry_quote
+    paper0 = engine.orders.paper_usdt
+    fake.override_price[t.symbol] = t.entry_price + 1.6 * r
+    engine.run_cycle()
+    t2 = db.get_trade(t.id)
+    assert t2.status == "OPEN" and engine.partial_taken(t2)
+    assert t2.quantity == pytest.approx(qty0 / 2, rel=0.01)
+    assert t2.entry_quote == pytest.approx(quote0 * t2.quantity / qty0, rel=1e-6)
+    part = [x for x in db.closed_trades_desc(mode="DRY_RUN") if x.exit_reason == "PARTIAL_TAKE_PROFIT"]
+    assert len(part) == 1 and part[0].pnl_usdt > 0
+    assert engine.orders.paper_usdt > paper0
+    assert engine.risk.trades_today(utcnow()) == 1  # kısmi kâr yeni işlem sayılmaz
+    engine.run_cycle()  # aynı fiyatta ikinci kez kısmi satış yok
+    assert len([x for x in db.closed_trades_desc(mode="DRY_RUN")
+                if x.exit_reason == "PARTIAL_TAKE_PROFIT"]) == 1
+
+
+def test_trailing_tightens_after_two_r():
+    engine, fake, db = dry_engine(rotation_enabled=False, partial_take_profit_enabled=False)
+    engine.run_cycle(force_scan=True)
+    t = db.open_trades("DRY_RUN")[0]
+    r = t.entry_price - t.initial_stop
+    atr = t.current_atr
+    fake.override_price[t.symbol] = t.entry_price + 1.2 * r  # henüz 2R değil: normal trailing
+    engine.run_cycle()
+    t1 = db.get_trade(t.id)
+    assert t1.stop_price == pytest.approx(t1.highest_price - 2.0 * atr, rel=1e-3)
+    fake.override_price[t.symbol] = t.entry_price + 2.2 * r  # 2R üstü: sıkı trailing
+    engine.run_cycle()
+    t2 = db.get_trade(t.id)
+    assert t2.stop_price == pytest.approx(t2.highest_price - 1.2 * atr, rel=1e-3)
+
+
+def test_partial_take_profit_live_replaces_exchange_stop():
+    engine, fake, db = live_engine(rotation_enabled=False)
+    engine.run_cycle(force_scan=True)
+    t = db.open_trades("LIVE")[0]
+    old_stop = int(t.stop_order_id)
+    r = t.entry_price - t.initial_stop
+    fake.override_price[t.symbol] = t.entry_price + 1.6 * r
+    engine.run_cycle()
+    t2 = db.get_trade(t.id)
+    assert fake.orders[old_stop]["status"] == "CANCELED"
+    assert t2.stop_order_id is not None and int(t2.stop_order_id) != old_stop
+    new_stop = fake.orders[int(t2.stop_order_id)]
+    assert float(new_stop["origQty"]) <= t2.quantity + 1e-12
+    assert float(new_stop["stopPrice"]) > t.entry_price  # stop kârda
+    assert any(c[0] == "SELL" for c in fake.calls)

@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     breakeven_trigger_atr: float = 1.0
     trailing_trigger_atr: float = 1.5
     trailing_atr_multiplier: float = 2.0
+    # Kâr büyüdükçe trailing daralır: kâr >= TRAIL_TIGHTEN_AFTER_R x risk olunca bu çarpan kullanılır
+    trail_tighten_after_r: float = 2.0
+    trailing_atr_multiplier_tight: float = 1.2
+    # Kısmi kâr alma: fiyat giriş + PARTIAL_TP_R_MULTIPLE x risk olunca pozisyonun bir kısmı satılır
+    partial_take_profit_enabled: bool = True
+    partial_tp_r_multiple: float = 1.5
+    partial_tp_fraction: float = 0.5
     reward_risk_ratio: float = 2.0
     max_extension_atr: float = 2.5
 
@@ -155,6 +162,10 @@ class Settings(BaseSettings):
             raise ValueError("MAX_DAILY_LOSS_PCT 0 ile 0.2 arasında olmalı")
         if self.max_open_positions < 1:
             raise ValueError("MAX_OPEN_POSITIONS en az 1 olmalı")
+        if not 0 < self.partial_tp_fraction < 1:
+            raise ValueError("PARTIAL_TP_FRACTION 0 ile 1 arasında olmalı")
+        if self.trailing_atr_multiplier_tight <= 0 or self.trailing_atr_multiplier_tight > self.trailing_atr_multiplier:
+            raise ValueError("TRAILING_ATR_MULTIPLIER_TIGHT pozitif ve normal çarpandan büyük olmamalı")
         if self.stop_atr_multiplier <= 0 or self.trailing_atr_multiplier <= 0:
             raise ValueError("ATR çarpanları pozitif olmalı")
         # Binance TR'de pariteler TL (TRY) bazlıdır; açıkça ayarlanmadıysa TRY kullanılır

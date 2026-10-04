@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any, Iterator
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -24,6 +24,8 @@ from database.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+PARTIAL_TP_REASON = "PARTIAL_TAKE_PROFIT"
 
 
 def _ensure_sqlite_dir(url: str) -> None:
@@ -126,8 +128,12 @@ class Database:
             return list(s.scalars(q.order_by(Trade.exit_time.desc(), Trade.id.desc()).limit(limit)))
 
     def trades_opened_since(self, since: datetime, mode: str | None = None) -> int:
+        """Yeni açılan işlem sayısı (kısmi kâr kayıtları ayrı işlem sayılmaz)."""
         with self.session() as s:
-            q = select(func.count(Trade.id)).where(Trade.entry_time >= since)
+            q = select(func.count(Trade.id)).where(
+                Trade.entry_time >= since,
+                or_(Trade.exit_reason.is_(None), Trade.exit_reason != PARTIAL_TP_REASON),
+            )
             if mode:
                 q = q.where(Trade.mode == mode)
             return int(s.scalar(q) or 0)

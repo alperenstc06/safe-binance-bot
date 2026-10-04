@@ -219,7 +219,7 @@ async function refresh() {
     signed($("dpnl"), s.daily_pnl); signed($("tpnl"), s.total_pnl);
     $("tcount").textContent = s.trades_today + " / " + s.settings.max_daily_trades;
     $("losses").textContent = s.consecutive_losses + " / " + s.settings.max_consecutive_losses;
-    $("positions").innerHTML = s.positions.length ? s.positions.map(p => `<tr><td>${esc(p.symbol)}</td><td>${num(p.quantity,8)}</td><td>${num(p.entry_price,8)}</td><td>${num(p.current_price,8)}</td><td>${num(p.stop_price,8)}</td><td>${p.trailing_active ? num(p.trailing_stop,8) : "pasif"}</td><td class="${p.pnl_usdt>=0?"pos":"neg"}">${num(p.pnl_usdt,2)}</td><td class="${p.pnl_pct>=0?"pos":"neg"}">${num(p.pnl_pct,2)}%</td><td>${num(p.score_at_entry,1)}</td></tr>`).join("") : `<tr><td colspan="9" class="muted">Açık pozisyon yok</td></tr>`;
+    $("positions").innerHTML = s.positions.length ? s.positions.map(p => `<tr><td>${esc(p.symbol)}${p.partial_taken ? ' <span class="muted">(yarısı satıldı)</span>' : ''}</td><td>${num(p.quantity,8)}</td><td>${num(p.entry_price,8)}</td><td>${num(p.current_price,8)}</td><td>${num(p.stop_price,8)}</td><td>${p.trailing_active ? num(p.trailing_stop,8) : "pasif"}</td><td class="${p.pnl_usdt>=0?"pos":"neg"}">${num(p.pnl_usdt,2)}</td><td class="${p.pnl_pct>=0?"pos":"neg"}">${num(p.pnl_pct,2)}%</td><td>${num(p.score_at_entry,1)}</td></tr>`).join("") : `<tr><td colspan="9" class="muted">Açık pozisyon yok</td></tr>`;
     $("holdings").innerHTML = renderHoldings(s);
     $("accounts").innerHTML = renderAccounts(s);
     $("b-exch").textContent = EXCH_NAMES[s.exchange] || s.exchange || "";

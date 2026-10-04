@@ -27,7 +27,7 @@ from bot.strategy import (
     momentum_negative,
     trend_broken,
 )
-from database.database import Database
+from database.database import PARTIAL_TP_REASON, Database
 from database.models import Signal, Trade, utcnow
 
 logger = logging.getLogger(__name__)
@@ -515,7 +515,7 @@ class BotEngine:
             atr_value=ind.atr, breakeven_active=t.breakeven_active, trailing_active=t.trailing_active,
             breakeven_trigger_atr=self.s.breakeven_trigger_atr,
             trailing_trigger_atr=self.s.trailing_trigger_atr,
-            trailing_atr_multiplier=self.s.trailing_atr_multiplier,
+            trailing_atr_multiplier=self._trailing_multiplier(t, bid),
             round_trip_cost_pct=self.s.round_trip_cost_pct,
         )
         t.highest_price, t.breakeven_active, t.trailing_active = upd.highest, upd.breakeven_active, upd.trailing_active
@@ -535,6 +535,11 @@ class BotEngine:
             self.close_trade(t, "MOMENTUM_NEGATIVE")
             return
 
+        if self._partial_tp_due(t, bid):
+            self._take_partial_profit(t, filters, bid)
+            self.db.save_trade(t)
+            return
+
         if upd.changed and self.s.is_live and t.stop_order_id:
             filled = self.orders.cancel_stop(t.symbol, t.stop_order_id, t.base_asset)
             if filled is not None and filled.quantity >= t.quantity * 0.999:
@@ -544,6 +549,92 @@ class BotEngine:
                 t.quantity = max(0.0, t.quantity - filled.quantity)
             t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
         self.db.save_trade(t)
+
+    # ------------------------------------------------------ kâr yönetimi
+    @staticmethod
+    def _initial_risk(t: Trade) -> float:
+        """Birim başına başlangıç riski (R) = giriş - ilk stop."""
+        return max(t.entry_price - t.initial_stop, 0.0)
+
+    def _trailing_multiplier(self, t: Trade, price: float) -> float:
+        r = self._initial_risk(t)
+        peak = max(t.highest_price, price)
+        if r > 0 and peak - t.entry_price >= self.s.trail_tighten_after_r * r:
+            return self.s.trailing_atr_multiplier_tight
+        return self.s.trailing_atr_multiplier
+
+    def _partial_key(self, t: Trade) -> str:
+        return f"partial_tp_done:{t.id}"
+
+    def partial_taken(self, t: Trade) -> bool:
+        return bool(self.db.get_state(self._partial_key(t), False))
+
+    def _partial_tp_due(self, t: Trade, bid: float) -> bool:
+        if not self.s.partial_take_profit_enabled or self.partial_taken(t):
+            return False
+        r = self._initial_risk(t)
+        return r > 0 and bid >= t.entry_price + self.s.partial_tp_r_multiple * r
+
+    def _take_partial_profit(self, t: Trade, filters, bid: float) -> bool:
+        """Pozisyonun bir kısmını satar, kalanı için borsa stopunu yeni miktarla yeniden koyar."""
+        qty_part = float(filters.round_qty(t.quantity * self.s.partial_tp_fraction, market=True))
+        min_notional = float(filters.min_notional or 0)
+        if qty_part <= 0 or qty_part * bid < min_notional or (t.quantity - qty_part) * bid < min_notional:
+            self.db.set_state(self._partial_key(t), True)
+            self.db.log_decision("TAKE_PROFIT", f"{t.symbol} kısmi kâr atlandı: parçalar minimum emir "
+                                                f"tutarının altında kalıyor")
+            return False
+
+        available = None
+        if self.s.is_live:
+            filled = self.orders.cancel_stop(t.symbol, t.stop_order_id, t.base_asset)
+            t.stop_order_id, t.stop_order_price = None, None
+            if filled is not None and filled.quantity >= t.quantity * 0.999:
+                self._finalize_close(t, filled, "STOP_LOSS_EXCHANGE")
+                return True
+            if filled is not None:
+                t.quantity = max(0.0, t.quantity - filled.quantity)
+            available = self._free_balance(t.base_asset, retries=2)
+        try:
+            sold = self.orders.sell(t.symbol, qty_part, filters, available=available)
+        except (BinanceAPIError, OrderError) as exc:
+            sold = None
+            self.db.log_decision("TAKE_PROFIT", f"{t.symbol} kısmi satış başarısız: {exc}", level="ERROR")
+        if sold is not None and sold.quantity > 0:
+            self._record_partial(t, sold)
+            self.db.set_state(self._partial_key(t), True)
+        if self.s.is_live and self.s.place_exchange_stop and t.status == "OPEN":
+            t.stop_order_id, t.stop_order_price = self._safe_place_stop(t, filters)
+        return sold is not None
+
+    def _record_partial(self, t: Trade, sold: FillResult) -> None:
+        frac = min(sold.quantity / t.quantity, 1.0) if t.quantity else 1.0
+        entry_quote = t.entry_quote * frac
+        entry_ext = (t.entry_external_fee_usdt or 0.0) * frac
+        pnl = sold.quote_net - entry_quote - entry_ext - sold.external_fee_usdt
+        part = Trade(
+            symbol=t.symbol, base_asset=t.base_asset, mode=t.mode, status="CLOSED",
+            quantity=sold.quantity, entry_price=t.entry_price, entry_quote=entry_quote,
+            entry_fee_usdt=(t.entry_fee_usdt or 0.0) * frac, entry_external_fee_usdt=entry_ext,
+            entry_time=t.entry_time, entry_order_id=t.entry_order_id, score_at_entry=t.score_at_entry,
+            atr_at_entry=t.atr_at_entry, current_atr=t.current_atr, initial_stop=t.initial_stop,
+            stop_price=t.stop_price, highest_price=t.highest_price, exit_price=sold.avg_price,
+            exit_quote=sold.quote_net, exit_fee_usdt=sold.fee_usdt,
+            exit_external_fee_usdt=sold.external_fee_usdt, exit_time=utcnow(),
+            exit_order_id=sold.order_id, exit_reason=PARTIAL_TP_REASON, pnl_usdt=pnl,
+            pnl_pct=pnl / entry_quote * 100 if entry_quote else 0.0,
+            notes=f"İşlem #{t.id} için kısmi kâr",
+        )
+        self.db.add_trade(part)
+        t.quantity = max(0.0, t.quantity - sold.quantity)
+        t.entry_quote -= entry_quote
+        t.entry_fee_usdt = (t.entry_fee_usdt or 0.0) * (1 - frac)
+        t.entry_external_fee_usdt = (t.entry_external_fee_usdt or 0.0) * (1 - frac)
+        self.db.log_decision("TAKE_PROFIT", f"KISMİ KÂR {t.symbol} miktar={sold.quantity:.8g} "
+                                            f"fiyat={sold.avg_price:.8g} PNL={pnl:.4f} {self.quote}; "
+                                            f"kalan={t.quantity:.8g}")
+        if self.snapshot is not None:
+            self._update_daily(utcnow(), self.snapshot.equity_quote)
 
     def unrealized_pnl(self, t: Trade) -> float:
         price = self.prices.get(t.symbol, t.entry_price)
@@ -713,6 +804,7 @@ class BotEngine:
                 "pnl_pct": round(upnl / t.entry_quote * 100, 3) if t.entry_quote else 0.0,
                 "score_at_entry": t.score_at_entry, "entry_time": t.entry_time.isoformat(),
                 "exchange_stop_order": t.stop_order_id,
+                "partial_taken": self.partial_taken(t),
             })
         stat = self.db.get_daily_stat(self._day_key(now))
         streak, _ = self.risk.consecutive_losses()
