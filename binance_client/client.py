@@ -212,3 +212,27 @@ def build_client(settings) -> BinanceSpotClient:
         timeout=settings.binance_timeout_seconds,
         recv_window=settings.binance_recv_window,
     )
+
+
+def build_tr_client(settings):
+    from binance_client.tr_client import BinanceTRClient
+
+    market = BinanceSpotClient(base_url=settings.binance_tr_market_data_url,
+                               timeout=settings.binance_timeout_seconds)
+    return BinanceTRClient(
+        api_key=settings.binance_tr_api_key.get_secret_value(),
+        api_secret=settings.binance_tr_api_secret.get_secret_value(),
+        base_url=settings.binance_tr_base_url,
+        market_data=market,
+        timeout=settings.binance_timeout_seconds,
+        recv_window=settings.binance_recv_window,
+    )
+
+
+def build_clients(settings) -> tuple[object, dict[str, object]]:
+    """(işlem istemcisi, panelde gösterilecek hesaplar) döndürür."""
+    global_client = build_client(settings)
+    tr_client = build_tr_client(settings)
+    accounts = {"BINANCE_GLOBAL": global_client, "BINANCE_TR": tr_client}
+    trading = tr_client if settings.is_tr else global_client
+    return trading, accounts

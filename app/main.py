@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 
 from api.routes import router
 from app.config import Settings, get_settings
-from binance_client.client import build_client
+from binance_client.client import build_clients
 from bot.engine import BotEngine
 from database.database import Database
 
@@ -45,12 +45,14 @@ def setup_logging(settings: Settings) -> None:
 
 
 def create_app(settings: Settings | None = None, client=None, db: Database | None = None,
-               autostart: bool | None = None) -> FastAPI:
+               autostart: bool | None = None, accounts: dict | None = None) -> FastAPI:
     settings = settings or get_settings()
     setup_logging(settings)
-    client = client or build_client(settings)
+    if client is None:
+        client, built_accounts = build_clients(settings)
+        accounts = accounts or built_accounts
     db = db or Database(settings.database_url)
-    engine = BotEngine(settings, client, db)
+    engine = BotEngine(settings, client, db, accounts=accounts)
 
     should_autostart = settings.auto_start if autostart is None else autostart
     if settings.is_live and not settings.allow_live_auto_start:
@@ -59,7 +61,8 @@ def create_app(settings: Settings | None = None, client=None, db: Database | Non
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         mode = settings.trading_mode.value
-        logger.warning("Bot modu: %s%s", mode, " (GERÇEK EMİRLER!)" if settings.is_live else
+        logger.warning("Bot modu: %s, borsa: %s%s", mode, settings.trading_exchange.value,
+                       " (GERÇEK EMİRLER!)" if settings.is_live else
                        " (simülasyon, gerçek emir gönderilmez)")
         if should_autostart:
             try:

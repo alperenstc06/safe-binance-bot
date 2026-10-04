@@ -41,13 +41,19 @@ class SafetyError(RuntimeError):
 
 
 class BotEngine:
-    def __init__(self, settings, client, db: Database):
+    def __init__(self, settings, client, db: Database, accounts: dict | None = None):
         self.s = settings
         self.client = client
         self.db = db
         self.mode = settings.trading_mode.value
-        self.risk = RiskManager(settings, db, self.mode)
-        self.orders = OrderManager(client, db, settings)
+        self.exchange = settings.trading_exchange.value
+        # Kayıt defteri: Global için "DRY_RUN"/"LIVE", TR için "DRY_RUN@BINANCE_TR" vb.
+        self.book = self.mode if self.exchange == "BINANCE_GLOBAL" else f"{self.mode}@{self.exchange}"
+        self.accounts = dict(accounts or {})
+        self.accounts[self.exchange] = client
+        self.account_views: dict[str, dict] = {}
+        self.risk = RiskManager(settings, db, self.book)
+        self.orders = OrderManager(client, db, settings, book=self.book)
         self.portfolio = PortfolioManager(client, db, settings, self.orders)
         self.scanner = MarketScanner(client, settings)
 
@@ -92,6 +98,10 @@ class BotEngine:
                               "bu yetkiyi kapatın; bot bu anahtarla çalışmaz.")
         if not perms.get("enableSpotAndMarginTrading", True):
             raise SafetyError("API anahtarında Spot işlem yetkisi kapalı")
+        if perms.get("permissions_verifiable") is False:
+            self.db.log_decision("SAFETY", f"{self.exchange} API anahtar yetkileri otomatik doğrulanamıyor. "
+                                           f"Para çekme (withdraw) yetkisinin KAPALI olduğunu borsa "
+                                           f"panelinden kontrol edin.", level="WARNING")
         for flag, name in (("enableFutures", "Futures"), ("enableMargin", "Margin")):
             if perms.get(flag):
                 self.db.log_decision("SAFETY", f"Uyarı: API anahtarında {name} yetkisi açık; bot "
@@ -109,7 +119,7 @@ class BotEngine:
             self._thread = threading.Thread(target=self._loop, name="bot-engine", daemon=True)
             self._thread.start()
             self.db.set_state(RUNNING_KEY, True)
-            self.db.log_decision("BOT", f"Bot başlatıldı ({self.mode})")
+            self.db.log_decision("BOT", f"Bot başlatıldı ({self.mode}, {self.exchange})")
 
     def stop(self, reason: str = "Kullanıcı tarafından durduruldu") -> None:
         self._stop_event.set()
@@ -157,7 +167,7 @@ class BotEngine:
         """Yeniden başlatma sonrası açık pozisyonları DB ve borsa ile eşitler."""
         messages: list[str] = []
         with self._lock:
-            open_trades = self.db.open_trades(self.mode)
+            open_trades = self.db.open_trades(self.book)
             if not open_trades:
                 self._synced = True
                 return messages
@@ -209,7 +219,7 @@ class BotEngine:
                 self.orders.refresh_fee_rate()
             self.prices = self.client.prices()
 
-            for t in self.db.open_trades(self.mode):
+            for t in self.db.open_trades(self.book):
                 if t.symbol not in filters:
                     self.db.log_decision("POSITION", f"{t.symbol} artık exchangeInfo'da yok", level="WARNING")
                     continue
@@ -218,7 +228,7 @@ class BotEngine:
                 except (BinanceAPIError, OrderError) as exc:
                     self.db.log_decision("POSITION", f"{t.symbol} yönetim hatası: {exc}", level="ERROR")
 
-            open_trades = self.db.open_trades(self.mode)
+            open_trades = self.db.open_trades(self.book)
             self.snapshot = self.portfolio.snapshot(self.prices, open_trades)
             unrealized = sum(self.unrealized_pnl(t) for t in open_trades)
             stat = self._update_daily(now, self.snapshot.equity_usdt)
@@ -228,14 +238,14 @@ class BotEngine:
                 self._scan_and_trade(now, stat.start_equity, unrealized)
                 self.last_scan_at = time.time()
 
-            open_trades = self.db.open_trades(self.mode)
+            open_trades = self.db.open_trades(self.book)
             self.snapshot = self.portfolio.snapshot(self.prices, open_trades)
             unrealized = sum(self.unrealized_pnl(t) for t in open_trades)
             self._update_daily(now, self.snapshot.equity_usdt)
             self.db.add_pnl_snapshot(
                 equity_usdt=self.snapshot.equity_usdt, usdt_balance=self.snapshot.usdt_free,
                 daily_pnl=self.risk.daily_pnl(now, unrealized),
-                total_pnl=self.db.total_realized_pnl(self.mode) + unrealized,
+                total_pnl=self.db.total_realized_pnl(self.book) + unrealized,
                 unrealized_pnl=unrealized,
             )
             self.last_cycle_at = now
@@ -256,18 +266,39 @@ class BotEngine:
         self.real_snapshot = self.snapshot if self.s.is_live else self.portfolio.real_snapshot(self.prices)
         error = self.portfolio.last_account_error
         if error and error != prev_error:
-            self.db.log_decision("ACCOUNT", f"Binance hesap bakiyesi okunamadı: {error}", level="ERROR")
+            self.db.log_decision("ACCOUNT", f"{self.exchange} hesap bakiyesi okunamadı: {error}", level="ERROR")
+        self._refresh_account_views()
         if self.real_snapshot is not None:
-            bot_assets = {t.base_asset for t in self.db.open_trades(self.mode)}
+            bot_assets = {t.base_asset for t in self.db.open_trades(self.book)}
             self.holding_decisions = self.portfolio.assess_holdings(
                 self.real_snapshot, lambda sym: self._score_symbol(sym, scan),
                 best.score if best else None, bot_assets, tradable)
             self._execute_holding_decisions(self.holding_decisions)
 
         self._try_rotation(scan, now, day_start_equity, unrealized)
-        open_trades = self.db.open_trades(self.mode)
+        open_trades = self.db.open_trades(self.book)
         unrealized = sum(self.unrealized_pnl(t) for t in open_trades)
         self._try_open(scan, now, day_start_equity, unrealized, len(open_trades))
+
+    def _refresh_account_views(self) -> None:
+        """Panelde gösterilecek tüm borsa hesaplarını (yalnızca okuma) günceller."""
+        views: dict[str, dict] = {}
+        for name, client in self.accounts.items():
+            view = {"exchange": name, "trading": name == self.exchange,
+                    "has_api_keys": bool(getattr(client, "has_keys", False)),
+                    "error": None, "portfolio": None}
+            if name == self.exchange:
+                view["error"] = self.portfolio.last_account_error
+                view["portfolio"] = self.real_snapshot.to_dict() if self.real_snapshot else None
+            elif view["has_api_keys"]:
+                snap, err = self.portfolio.snapshot_for(client, self.prices)
+                prev = self.account_views.get(name, {}).get("error")
+                if err and err != prev:
+                    self.db.log_decision("ACCOUNT", f"{name} hesap bakiyesi okunamadı: {err}", level="ERROR")
+                view["error"] = err
+                view["portfolio"] = snap.to_dict() if snap else None
+            views[name] = view
+        self.account_views = views
 
     def _detect_regime(self, tickers: list[dict]) -> RegimeResult:
         btc = next((t for t in tickers if t.get("symbol") == "BTCUSDT"), {})
@@ -349,7 +380,7 @@ class BotEngine:
                              self.s.min_expected_edge_pct, self.s.min_cost_coverage)
         if not edge.ok:
             return False, edge.reason
-        snap = self.snapshot or self.portfolio.snapshot(self.prices, self.db.open_trades(self.mode))
+        snap = self.snapshot or self.portfolio.snapshot(self.prices, self.db.open_trades(self.book))
         size = self.risk.position_size(snap.equity_usdt, snap.usdt_free, est_entry, est_stop, size_mult)
         if not size.ok:
             return False, size.reason
@@ -358,9 +389,16 @@ class BotEngine:
         except OrderError as exc:
             return False, str(exc)
 
+        if self.s.is_live:
+            try:
+                held = self.client.balances().get(filters.base_asset, {}).get("free", 0.0)
+                if 0 < held < fill.quantity:
+                    fill.quantity = held
+            except BinanceAPIError as exc:
+                logger.warning("Alış sonrası bakiye okunamadı: %s", exc)
         stop = initial_stop_price(fill.avg_price, cand.atr, self.s.stop_atr_multiplier)
         trade = Trade(
-            symbol=cand.symbol, base_asset=filters.base_asset, mode=self.mode, status="OPEN",
+            symbol=cand.symbol, base_asset=filters.base_asset, mode=self.book, status="OPEN",
             quantity=fill.quantity, entry_price=fill.avg_price, entry_quote=fill.quote_net,
             entry_fee_usdt=fill.fee_usdt, entry_external_fee_usdt=fill.external_fee_usdt,
             entry_time=utcnow(), entry_order_id=fill.order_id, score_at_entry=cand.score,
@@ -499,7 +537,7 @@ class BotEngine:
         results: list[str] = []
         with self._lock:
             self.client.load_exchange_info()
-            for t in self.db.open_trades(self.mode):
+            for t in self.db.open_trades(self.book):
                 try:
                     self.close_trade(t, reason)
                     results.append(f"{t.symbol} kapatıldı")
@@ -519,7 +557,7 @@ class BotEngine:
         min_score, _ = self._min_score()
         if best.score < min_score or (self.regime and not self.regime.allows_new_trades):
             return
-        for t in self.db.open_trades(self.mode):
+        for t in self.db.open_trades(self.book):
             if t.symbol == best.symbol:
                 continue
             if now - t.entry_time < timedelta(minutes=self.s.rotation_min_hold_minutes):
@@ -531,7 +569,7 @@ class BotEngine:
             diff = best.score - current.score
             if diff < self.s.rotation_min_score_diff:
                 continue
-            open_after = len(self.db.open_trades(self.mode)) - 1
+            open_after = len(self.db.open_trades(self.book)) - 1
             check = self.risk.can_open_trade(now, open_after, day_start_equity, unrealized, self.emergency)
             if not check.allowed:
                 return
@@ -566,16 +604,20 @@ class BotEngine:
                 self.db.log_decision("HOLDING", f"{d.symbol} satılamadı: {exc}", level="ERROR")
 
     # -------------------------------------------------------- günlük istatistik
-    def _update_daily(self, now: datetime, equity: float):
+    def _day_key(self, now: datetime) -> str:
         day = now.strftime("%Y-%m-%d")
+        return day if self.book in ("DRY_RUN", "LIVE") else f"{day}@{self.book}"
+
+    def _update_daily(self, now: datetime, equity: float):
+        day = self._day_key(now)
         since = utc_day_start(now)
         stat = self.db.get_daily_stat(day)
-        closed_today = [t for t in self.db.closed_trades_desc(limit=500, mode=self.mode)
+        closed_today = [t for t in self.db.closed_trades_desc(limit=500, mode=self.book)
                         if t.exit_time and t.exit_time >= since]
         fields = dict(
             end_equity=equity,
-            realized_pnl=self.db.realized_pnl_since(since, self.mode),
-            trades_opened=self.db.trades_opened_since(since, self.mode),
+            realized_pnl=self.db.realized_pnl_since(since, self.book),
+            trades_opened=self.db.trades_opened_since(since, self.book),
             trades_closed=len(closed_today),
             wins=sum(1 for t in closed_today if (t.pnl_usdt or 0) > 0),
             losses=sum(1 for t in closed_today if (t.pnl_usdt or 0) < 0),
@@ -588,7 +630,7 @@ class BotEngine:
     # ----------------------------------------------------------------- panel
     def status(self) -> dict:
         now = utcnow()
-        open_trades = self.db.open_trades(self.mode)
+        open_trades = self.db.open_trades(self.book)
         positions = []
         unrealized_total = 0.0
         for t in open_trades:
@@ -606,13 +648,15 @@ class BotEngine:
                 "score_at_entry": t.score_at_entry, "entry_time": t.entry_time.isoformat(),
                 "exchange_stop_order": t.stop_order_id,
             })
-        stat = self.db.get_daily_stat(now.strftime("%Y-%m-%d"))
+        stat = self.db.get_daily_stat(self._day_key(now))
         streak, _ = self.risk.consecutive_losses()
         cooldown = self.risk.cooldown_until()
         snap = self.snapshot
         return {
             "running": self.running,
             "mode": self.mode,
+            "exchange": self.exchange,
+            "accounts": list(self.account_views.values()),
             "emergency_stop": self.emergency,
             "regime": self.regime.regime.value if self.regime else None,
             "regime_reason": self.regime.reason if self.regime else None,
@@ -625,9 +669,9 @@ class BotEngine:
                 "error": self.portfolio.last_account_error,
             },
             "daily_pnl": round(self.risk.daily_pnl(now, unrealized_total), 4),
-            "total_pnl": round(self.db.total_realized_pnl(self.mode) + unrealized_total, 4),
-            "realized_pnl": round(self.db.total_realized_pnl(self.mode), 4),
-            "total_fees": round(self.db.total_fees(self.mode), 4),
+            "total_pnl": round(self.db.total_realized_pnl(self.book) + unrealized_total, 4),
+            "realized_pnl": round(self.db.total_realized_pnl(self.book), 4),
+            "total_fees": round(self.db.total_fees(self.book), 4),
             "day_start_equity": stat.start_equity if stat else None,
             "positions": positions,
             "no_trade_reason": self.no_trade_reason,

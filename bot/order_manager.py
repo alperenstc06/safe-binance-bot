@@ -92,14 +92,16 @@ def parse_market_fill(resp: dict, side: str, base_asset: str, price_lookup) -> F
 
 
 class OrderManager:
-    def __init__(self, client, db, settings):
+    def __init__(self, client, db, settings, book: str = "DRY_RUN"):
         self.client = client
         self.db = db
         self.s = settings
         self.live = settings.is_live
         self.fee_rate = settings.fee_rate
-        if not self.live and self.db.get_state(PAPER_USDT_KEY) is None:
-            self.db.set_state(PAPER_USDT_KEY, float(settings.dry_run_start_balance))
+        # Her borsanın kağıt bakiyesi ayrı tutulur
+        self.paper_key = PAPER_USDT_KEY if "@" not in book else f"{PAPER_USDT_KEY}@{book.split('@', 1)[1]}"
+        if not self.live and self.db.get_state(self.paper_key) is None:
+            self.db.set_state(self.paper_key, float(settings.dry_run_start_balance))
 
     def refresh_fee_rate(self) -> None:
         if self.live and self.client.has_keys:
@@ -108,10 +110,10 @@ class OrderManager:
     # --- Kağıt bakiye ---
     @property
     def paper_usdt(self) -> float:
-        return float(self.db.get_state(PAPER_USDT_KEY, self.s.dry_run_start_balance))
+        return float(self.db.get_state(self.paper_key, self.s.dry_run_start_balance))
 
     def _set_paper_usdt(self, value: float) -> None:
-        self.db.set_state(PAPER_USDT_KEY, round(value, 8))
+        self.db.set_state(self.paper_key, round(value, 8))
 
     # --- Alış ---
     def buy(self, symbol: str, quantity: float, filters: SymbolFilters) -> FillResult:

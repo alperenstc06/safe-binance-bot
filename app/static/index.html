@@ -46,7 +46,7 @@
 <body>
 <header>
   <h1>🛡️ Safe Binance Spot Bot</h1>
-  <div class="badges"><span id="b-run">…</span><span id="b-mode">…</span><span id="b-regime">…</span><span id="b-emg" style="display:none" class="bad">ACİL DURDURMA</span></div>
+  <div class="badges"><span id="b-run">…</span><span id="b-mode">…</span><span id="b-exch">…</span><span id="b-regime">…</span><span id="b-emg" style="display:none" class="bad">ACİL DURDURMA</span></div>
 </header>
 <main>
   <div class="card">
@@ -95,7 +95,12 @@
   </div>
 
   <div class="card">
-    <h2>Mevcut varlıklar ve kararlar</h2>
+    <h2>Borsa hesapları</h2>
+    <div class="grid" id="accounts"></div>
+  </div>
+
+  <div class="card">
+    <h2>Mevcut varlıklar ve kararlar <span class="muted" id="holdings-exch"></span></h2>
     <div class="table-wrap"><table>
       <thead><tr><th>Varlık</th><th>Değer (USDT)</th><th>Puan</th><th>Karar</th><th>Gerekçe</th></tr></thead>
       <tbody id="holdings"></tbody>
@@ -156,11 +161,30 @@ async function resetEmergency() {
   try { await api("emergency-reset", "POST", {confirm: text}); msg("Acil durum sıfırlandı"); refresh(); } catch (e) { msg(e.message, true); }
 }
 
+const EXCH_NAMES = {BINANCE_GLOBAL: "Binance Global", BINANCE_TR: "Binance TR"};
+function renderAccounts(s) {
+  const accounts = s.accounts || [];
+  if (!accounts.length) return `<div class="muted">Hesaplar ilk tarama bitince (1-2 dk) görünecek.</div>`;
+  return accounts.map(a => {
+    const title = esc(EXCH_NAMES[a.exchange] || a.exchange) + (a.trading ? ` <span class="ok" style="padding:2px 7px;border-radius:9px;font-size:11px">İŞLEM</span>` : ` <span class="muted">(sadece görüntüleme)</span>`);
+    let body;
+    if (!a.has_api_keys) body = `<div class="muted">API anahtarı girilmedi</div>`;
+    else if (a.error) body = `<div class="neg" style="font-size:12px">Okunamadı: ${esc(a.error)}</div>`;
+    else if (!a.portfolio) body = `<div class="muted">Bekleniyor…</div>`;
+    else {
+      const items = (a.portfolio.assets || []).filter(x => x.value_usdt >= 0.01).slice(0, 6)
+        .map(x => `${esc(x.asset)}: ${num(x.value_usdt, 2)}`).join(" · ");
+      body = `<div class="value">${num(a.portfolio.equity_usdt, 2)} <span class="muted">USDT</span></div><div class="muted" style="margin-top:4px">${items || "Spot cüzdan boş"}</div>`;
+    }
+    return `<div class="card stat" style="margin:0"><div class="label">${title}</div>${body}</div>`;
+  }).join("");
+}
+
 const STABLES = ["USDT","USDC","FDUSD","TUSD","DAI","USDP","BUSD"];
 function renderHoldings(s) {
   const acc = s.account_status || {};
   const empty = text => `<tr><td colspan="5" class="muted">${esc(text)}</td></tr>`;
-  if (!acc.has_api_keys) return empty("API anahtarı yüklenmedi: .env içine BINANCE_API_KEY ve BINANCE_API_SECRET girip botu yeniden başlatın.");
+  if (!acc.has_api_keys) return empty(s.exchange === "BINANCE_TR" ? "Binance TR API anahtarı yüklenmedi: .env içine BINANCE_TR_API_KEY ve BINANCE_TR_API_SECRET girip botu yeniden başlatın." : "API anahtarı yüklenmedi: .env içine BINANCE_API_KEY ve BINANCE_API_SECRET girip botu yeniden başlatın.");
   if (acc.error) return empty("Binance hesabı okunamadı: " + acc.error);
   const rp = s.real_portfolio;
   if (!rp) return empty("Hesap henüz okunmadı; ilk tarama bitince (1-2 dk) görünecek.");
@@ -196,6 +220,9 @@ async function refresh() {
     $("losses").textContent = s.consecutive_losses + " / " + s.settings.max_consecutive_losses;
     $("positions").innerHTML = s.positions.length ? s.positions.map(p => `<tr><td>${esc(p.symbol)}</td><td>${num(p.quantity,8)}</td><td>${num(p.entry_price,8)}</td><td>${num(p.current_price,8)}</td><td>${num(p.stop_price,8)}</td><td>${p.trailing_active ? num(p.trailing_stop,8) : "pasif"}</td><td class="${p.pnl_usdt>=0?"pos":"neg"}">${num(p.pnl_usdt,2)}</td><td class="${p.pnl_pct>=0?"pos":"neg"}">${num(p.pnl_pct,2)}%</td><td>${num(p.score_at_entry,1)}</td></tr>`).join("") : `<tr><td colspan="9" class="muted">Açık pozisyon yok</td></tr>`;
     $("holdings").innerHTML = renderHoldings(s);
+    $("accounts").innerHTML = renderAccounts(s);
+    $("b-exch").textContent = EXCH_NAMES[s.exchange] || s.exchange || "";
+    $("holdings-exch").textContent = "(" + (EXCH_NAMES[s.exchange] || s.exchange || "") + ")";
   } catch (e) { msg("Durum alınamadı: " + e.message, true); }
   try {
     const sig = await api("signals");

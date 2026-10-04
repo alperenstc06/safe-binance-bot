@@ -134,6 +134,14 @@ class PortfolioManager:
         self.last_account_error = None
         return snap
 
+    @staticmethod
+    def snapshot_for(client, prices: dict[str, float]) -> tuple[PortfolioSnapshot | None, str | None]:
+        """Herhangi bir borsa hesabının değerlemesi: (anlık görüntü, hata)."""
+        try:
+            return value_balances(client.balances(), prices), None
+        except BinanceAPIError as exc:
+            return None, str(exc)
+
     def snapshot(self, prices: dict[str, float], open_trades) -> PortfolioSnapshot:
         """Bot özsermayesi: LIVE'da gerçek hesap, DRY_RUN'da kağıt hesap."""
         if self.s.is_live:

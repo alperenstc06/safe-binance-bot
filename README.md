@@ -62,6 +62,24 @@ Binance'te API anahtarı oluştururken (Hesap → API Yönetimi):
 - ❌ Futures / Margin yetkileri – kapalı tutmanız önerilir
 - Mümkünse **IP kısıtlaması** ekleyin.
 
+## Binance TR desteği
+
+Bot iki borsayı destekler: **Binance Global** (binance.com) ve **Binance TR** (binance.tr).
+- Anahtarını girdiğiniz **her iki hesap da panelde** ("Borsa hesapları") görünür.
+- Bot alım-satımı **yalnızca bir borsada** yapar; seçim `.env` içinde:
+  ```env
+  TRADING_EXCHANGE=BINANCE_TR      # veya BINANCE_GLOBAL
+  BINANCE_TR_API_KEY=...
+  BINANCE_TR_API_SECRET=...
+  ```
+- Binance TR'de yalnızca emir defteri Binance ile ortak olan ("type 1") USDT pariteleri işlenir.
+  Bu paritelerin fiyat/mum/defter verisi Binance'in herkese açık Spot API'sinden okunur.
+- Binance TR API'si anahtar yetkilerini sorgulamaya izin vermez. **Para çekme yetkisinin kapalı
+  olduğunu Binance TR API ayarlarından kendiniz kontrol edin**; bot başlarken bunu hatırlatır.
+- Her borsanın işlem geçmişi, günlük istatistikleri ve DRY_RUN kağıt bakiyesi ayrı tutulur.
+- Binance TR entegrasyonu açık kaynak dokümantasyona göre yazılmış ve sahte API ile test
+  edilmiştir. Gerçek hesapta önce **DRY_RUN** ile birkaç gün deneyin.
+
 ## DRY_RUN (simülasyon)
 
 `TRADING_MODE=DRY_RUN` (varsayılan). Bot:

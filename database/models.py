@@ -24,7 +24,7 @@ class Trade(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     base_asset: Mapped[str] = mapped_column(String(16))
-    mode: Mapped[str] = mapped_column(String(10))
+    mode: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(10), index=True, default="OPEN")  # OPEN / CLOSED
 
     quantity: Mapped[float] = mapped_column(Float)
@@ -102,7 +102,7 @@ class BotStateKV(Base):
 class DailyStat(Base):
     __tablename__ = "daily_stats"
 
-    day: Mapped[str] = mapped_column(String(10), primary_key=True)  # YYYY-MM-DD (UTC)
+    day: Mapped[str] = mapped_column(String(32), primary_key=True)  # YYYY-MM-DD[@defter] (UTC)
     start_equity: Mapped[float] = mapped_column(Float)
     end_equity: Mapped[float] = mapped_column(Float)
     realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)

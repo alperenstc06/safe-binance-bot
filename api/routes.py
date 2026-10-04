@@ -54,7 +54,7 @@ def status(engine: BotEngine = Depends(get_engine)) -> dict:
 
 @router.get("/trades")
 def trades(limit: int = 50, engine: BotEngine = Depends(get_engine)) -> list[dict]:
-    return [_trade_dict(t) for t in engine.db.recent_trades(min(limit, 500), mode=engine.mode)]
+    return [_trade_dict(t) for t in engine.db.recent_trades(min(limit, 500), mode=engine.book)]
 
 
 @router.get("/signals")

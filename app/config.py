@@ -19,6 +19,11 @@ class TradingMode(str, Enum):
     LIVE = "LIVE"
 
 
+class Exchange(str, Enum):
+    BINANCE_GLOBAL = "BINANCE_GLOBAL"
+    BINANCE_TR = "BINANCE_TR"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -35,6 +40,15 @@ class Settings(BaseSettings):
     binance_testnet_url: str = "https://testnet.binance.vision"
     binance_timeout_seconds: int = 15
     binance_recv_window: int = 5000
+
+    # --- Binance TR bağlantısı ---
+    binance_tr_api_key: SecretStr = SecretStr("")
+    binance_tr_api_secret: SecretStr = SecretStr("")
+    binance_tr_base_url: str = "https://www.binance.tr"
+    binance_tr_market_data_url: str = "https://api.binance.com"
+
+    # --- İşlem yapılacak borsa (panelde iki hesap da gösterilir) ---
+    trading_exchange: Exchange = Exchange.BINANCE_GLOBAL
 
     # --- Çalışma modu ---
     trading_mode: TradingMode = TradingMode.DRY_RUN
@@ -120,6 +134,17 @@ class Settings(BaseSettings):
                 raise ValueError("TRADING_MODE yalnızca DRY_RUN veya LIVE olabilir")
         return value
 
+    @field_validator("trading_exchange", mode="before")
+    @classmethod
+    def _normalize_exchange(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip().upper().replace("-", "_")
+            aliases = {"GLOBAL": "BINANCE_GLOBAL", "BINANCE": "BINANCE_GLOBAL", "TR": "BINANCE_TR"}
+            value = aliases.get(value, value)
+            if value not in ("BINANCE_GLOBAL", "BINANCE_TR"):
+                raise ValueError("TRADING_EXCHANGE yalnızca BINANCE_GLOBAL veya BINANCE_TR olabilir")
+        return value
+
     @model_validator(mode="after")
     def _validate(self) -> "Settings":
         if not 0 < self.max_position_pct <= 1:
@@ -132,10 +157,10 @@ class Settings(BaseSettings):
             raise ValueError("MAX_OPEN_POSITIONS en az 1 olmalı")
         if self.stop_atr_multiplier <= 0 or self.trailing_atr_multiplier <= 0:
             raise ValueError("ATR çarpanları pozitif olmalı")
-        if self.trading_mode == TradingMode.LIVE and not self.has_api_keys:
-            raise ValueError(
-                "LIVE mod için BINANCE_API_KEY ve BINANCE_API_SECRET .env içinde tanımlı olmalı"
-            )
+        if self.trading_mode == TradingMode.LIVE and not self.has_trading_keys:
+            names = ("BINANCE_TR_API_KEY ve BINANCE_TR_API_SECRET" if self.is_tr
+                     else "BINANCE_API_KEY ve BINANCE_API_SECRET")
+            raise ValueError(f"LIVE mod için {names} .env içinde tanımlı olmalı")
         return self
 
     @property
@@ -144,6 +169,21 @@ class Settings(BaseSettings):
             self.binance_api_key.get_secret_value().strip()
             and self.binance_api_secret.get_secret_value().strip()
         )
+
+    @property
+    def has_tr_api_keys(self) -> bool:
+        return bool(
+            self.binance_tr_api_key.get_secret_value().strip()
+            and self.binance_tr_api_secret.get_secret_value().strip()
+        )
+
+    @property
+    def is_tr(self) -> bool:
+        return self.trading_exchange == Exchange.BINANCE_TR
+
+    @property
+    def has_trading_keys(self) -> bool:
+        return self.has_tr_api_keys if self.is_tr else self.has_api_keys
 
     @property
     def is_live(self) -> bool:
@@ -166,6 +206,8 @@ class Settings(BaseSettings):
         """Panelde gösterilebilecek, gizli bilgi içermeyen ayar özeti."""
         return {
             "trading_mode": self.trading_mode.value,
+            "trading_exchange": self.trading_exchange.value,
+            "has_tr_api_keys": self.has_tr_api_keys,
             "testnet": self.binance_testnet,
             "has_api_keys": self.has_api_keys,
             "max_position_pct": self.max_position_pct,
