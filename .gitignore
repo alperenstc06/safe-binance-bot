@@ -1,0 +1,29 @@
+# Gizli bilgiler - ASLA commit etmeyin
+.env
+.env.*
+!.env.example
+
+# Veritabanı ve loglar
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+data/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Editör
+.idea/
+.vscode/
+.DS_Store

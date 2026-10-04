@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    container_name: safe-binance-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PANEL_HOST: 0.0.0.0
+      PANEL_PORT: 8000
+    # Panel yalnızca bu bilgisayardan erişilebilir (127.0.0.1)
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs

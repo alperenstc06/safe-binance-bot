@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safe Binance Bot</title>
+<style>
+  :root { --bg:#0f1419; --card:#1a2129; --text:#e6e9ec; --muted:#8b96a3; --green:#2ebd85;
+          --red:#f6465d; --yellow:#f0b90b; --border:#2a333d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg);
+         color:var(--text); font-size:14px; }
+  header { padding:14px 16px; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap;
+           gap:8px; align-items:center; justify-content:space-between; }
+  h1 { font-size:17px; margin:0; }
+  h2 { font-size:14px; margin:0 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  main { padding:12px 16px 40px; max-width:1100px; margin:0 auto; }
+  .badges span { display:inline-block; padding:4px 9px; border-radius:12px; font-weight:600;
+                 font-size:12px; margin-left:4px; background:var(--border); }
+  .ok { background:var(--green)!important; color:#06110c; }
+  .bad { background:var(--red)!important; color:#fff; }
+  .warn { background:var(--yellow)!important; color:#1a1400; }
+  .grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px;
+          margin-bottom:12px; }
+  .stat .label { color:var(--muted); font-size:12px; }
+  .stat .value { font-size:19px; font-weight:700; margin-top:4px; word-break:break-all; }
+  .pos { color:var(--green); } .neg { color:var(--red); }
+  .buttons { display:flex; flex-wrap:wrap; gap:8px; }
+  button { border:0; border-radius:8px; padding:11px 14px; font-weight:700; font-size:14px;
+           cursor:pointer; flex:1 1 140px; }
+  .b-start { background:var(--green); color:#06110c; } .b-stop { background:#3a4652; color:var(--text); }
+  .b-emg { background:var(--red); color:#fff; } .b-close { background:var(--yellow); color:#1a1400; }
+  .b-small { flex:0 0 auto; padding:7px 10px; font-size:12px; background:#3a4652; color:var(--text); }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:7px 6px; border-bottom:1px solid var(--border); text-align:left; white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; }
+  .reason { font-size:15px; padding:10px; border-left:4px solid var(--yellow); background:#20262d; border-radius:6px; }
+  .muted { color:var(--muted); font-size:12px; }
+  input { background:#0b0f13; color:var(--text); border:1px solid var(--border); border-radius:6px;
+          padding:7px; width:180px; }
+  #msg { min-height:18px; margin-top:8px; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛡️ Safe Binance Spot Bot</h1>
+  <div class="badges"><span id="b-run">…</span><span id="b-mode">…</span><span id="b-regime">…</span><span id="b-emg" style="display:none" class="bad">ACİL DURDURMA</span></div>
+</header>
+<main>
+  <div class="card">
+    <div class="buttons">
+      <button class="b-start" onclick="act('start')">▶ Botu Başlat</button>
+      <button class="b-stop" onclick="act('stop')">⏸ Botu Durdur</button>
+      <button class="b-emg" onclick="emergency()">⛔ Acil Durdur</button>
+      <button class="b-close" onclick="closeAll()">✖ Tüm Pozisyonları Kapat</button>
+    </div>
+    <div id="msg"></div>
+    <div class="muted" style="margin-top:8px">
+      Panel anahtarı (PANEL_TOKEN tanımlıysa): <input id="token" type="password" placeholder="opsiyonel" onchange="saveToken()">
+      <button class="b-small" id="reset-emg" style="display:none" onclick="resetEmergency()">Acil durumu sıfırla</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Neden işlem açılmadı / son karar</h2>
+    <div class="reason" id="reason">—</div>
+    <div class="muted" id="cycle" style="margin-top:6px"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card stat"><div class="label">Toplam portföy (USDT)</div><div class="value" id="equity">—</div></div>
+    <div class="card stat"><div class="label">Serbest USDT</div><div class="value" id="usdt">—</div></div>
+    <div class="card stat"><div class="label">Bugünkü PNL</div><div class="value" id="dpnl">—</div></div>
+    <div class="card stat"><div class="label">Toplam PNL</div><div class="value" id="tpnl">—</div></div>
+    <div class="card stat"><div class="label">Bugünkü işlem</div><div class="value" id="tcount">—</div></div>
+    <div class="card stat"><div class="label">Ardışık kayıp</div><div class="value" id="losses">—</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Açık pozisyon</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Coin</th><th>Miktar</th><th>Alış</th><th>Güncel</th><th>Stop</th><th>Trailing stop</th><th>K/Z (USDT)</th><th>K/Z %</th><th>Puan</th></tr></thead>
+      <tbody id="positions"><tr><td colspan="9" class="muted">Açık pozisyon yok</td></tr></tbody>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h2>En yüksek puanlı coinler</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Coin</th><th>Puan</th><th>Fiyat</th><th>Uygun</th><th>Not</th></tr></thead>
+      <tbody id="signals"></tbody>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h2>Mevcut varlıklar ve kararlar</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Varlık</th><th>Değer (USDT)</th><th>Puan</th><th>Karar</th><th>Gerekçe</th></tr></thead>
+      <tbody id="holdings"></tbody>
+    </table></div>
+    <div class="muted">Mevcut varlıklar bot başladı diye satılmaz. Kararlar varsayılan olarak yalnızca öneridir.</div>
+  </div>
+
+  <div class="card">
+    <h2>Son işlemler</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Coin</th><th>Durum</th><th>Alış</th><th>Satış</th><th>PNL</th><th>Komisyon</th><th>Sebep</th><th>Zaman</th></tr></thead>
+      <tbody id="trades"></tbody>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h2>Karar günlüğü</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Zaman (UTC)</th><th>Tür</th><th>Mesaj</th></tr></thead>
+      <tbody id="logs"></tbody>
+    </table></div>
+  </div>
+  <p class="muted">Bu yazılım kâr garantisi vermez. Kripto para işlemleri yüksek risk içerir.</p>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const num = (v, d=4) => v === null || v === undefined ? "—" : Number(v).toLocaleString("tr-TR", {maximumFractionDigits:d});
+const signed = (el, v, d=2) => { el.textContent = v == null ? "—" : (v > 0 ? "+" : "") + num(v, d); el.className = "value " + (v > 0 ? "pos" : v < 0 ? "neg" : ""); };
+try { $("token").value = localStorage.getItem("panelToken") || ""; } catch (e) {}
+function saveToken() { try { localStorage.setItem("panelToken", $("token").value); } catch (e) {} }
+
+async function api(path, method="GET", body=null) {
+  const opts = { method, headers: {"Content-Type":"application/json"} };
+  const t = $("token").value; if (t) opts.headers["X-Panel-Token"] = t;
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch("/api/" + path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
+  return data;
+}
+function msg(text, bad=false) { $("msg").textContent = text; $("msg").style.color = bad ? "var(--red)" : "var(--green)"; }
+async function act(name) { try { await api(name, "POST"); msg("İşlem tamam: " + name); refresh(); } catch (e) { msg(e.message, true); } }
+async function emergency() {
+  if (!confirm("ACİL DURDURMA: Bot durdurulacak ve yeni işlem açılmayacak. Açık pozisyonlar ve koruyucu stoplar korunur. Devam?")) return;
+  act("emergency-stop");
+}
+async function closeAll() {
+  if (!confirm("Tüm açık bot pozisyonları piyasa fiyatından satılacak. Emin misiniz?")) return;
+  const text = prompt("Onaylamak için tam olarak şunu yazın:\nTUM POZISYONLARI KAPAT");
+  if (text === null) return;
+  try { const r = await api("close-all", "POST", {confirm: text}); msg((r.results || []).join(", ") || "Açık pozisyon yoktu"); refresh(); }
+  catch (e) { msg(e.message, true); }
+}
+async function resetEmergency() {
+  const text = prompt("Acil durumu sıfırlamak için yazın:\nACIL DURUMU SIFIRLA");
+  if (text === null) return;
+  try { await api("emergency-reset", "POST", {confirm: text}); msg("Acil durum sıfırlandı"); refresh(); } catch (e) { msg(e.message, true); }
+}
+
+async function refresh() {
+  try {
+    const s = await api("status");
+    $("b-run").textContent = s.running ? "ÇALIŞIYOR" : "DURDU"; $("b-run").className = s.running ? "ok" : "bad";
+    $("b-mode").textContent = s.mode; $("b-mode").className = s.mode === "LIVE" ? "bad" : "warn";
+    $("b-regime").textContent = s.regime || "REJİM ?";
+    $("b-regime").className = s.regime === "BULL" ? "ok" : (s.regime === "BEAR" || s.regime === "HIGH_VOLATILITY") ? "bad" : "";
+    $("b-emg").style.display = s.emergency_stop ? "" : "none";
+    $("reset-emg").style.display = s.emergency_stop ? "" : "none";
+    $("reason").textContent = s.no_trade_reason || "—";
+    $("cycle").textContent = "Son döngü: " + (s.last_cycle_at || "—") + (s.last_error ? " | Hata: " + s.last_error : "") + (s.cooldown_until ? " | Soğuma: " + s.cooldown_until : "");
+    $("equity").textContent = num(s.equity_usdt, 2); $("usdt").textContent = num(s.usdt_free, 2);
+    signed($("dpnl"), s.daily_pnl); signed($("tpnl"), s.total_pnl);
+    $("tcount").textContent = s.trades_today + " / " + s.settings.max_daily_trades;
+    $("losses").textContent = s.consecutive_losses + " / " + s.settings.max_consecutive_losses;
+    $("positions").innerHTML = s.positions.length ? s.positions.map(p => `<tr><td>${esc(p.symbol)}</td><td>${num(p.quantity,8)}</td><td>${num(p.entry_price,8)}</td><td>${num(p.current_price,8)}</td><td>${num(p.stop_price,8)}</td><td>${p.trailing_active ? num(p.trailing_stop,8) : "pasif"}</td><td class="${p.pnl_usdt>=0?"pos":"neg"}">${num(p.pnl_usdt,2)}</td><td class="${p.pnl_pct>=0?"pos":"neg"}">${num(p.pnl_pct,2)}%</td><td>${num(p.score_at_entry,1)}</td></tr>`).join("") : `<tr><td colspan="9" class="muted">Açık pozisyon yok</td></tr>`;
+    const hd = s.holding_decisions || [];
+    $("holdings").innerHTML = hd.length ? hd.map(h => `<tr><td>${esc(h.asset)}</td><td>${num(h.value_usdt,2)}</td><td>${h.score==null?"—":num(h.score,1)}</td><td>${esc(h.decision)}${h.executable?" (uygulanacak)":""}</td><td>${esc(h.reason)}</td></tr>`).join("") : `<tr><td colspan="5" class="muted">Hesap verisi yok (DRY_RUN ve API anahtarı yoksa gerçek varlıklar okunmaz)</td></tr>`;
+  } catch (e) { msg("Durum alınamadı: " + e.message, true); }
+  try {
+    const sig = await api("signals");
+    $("signals").innerHTML = sig.length ? sig.map(x => `<tr><td>${esc(x.symbol)}</td><td><b>${num(x.score,1)}</b></td><td>${num(x.price,8)}</td><td>${x.eligible?"✔":"✖"}</td><td>${esc((x.reasons||[]).slice(0,2).join("; "))}</td></tr>`).join("") : `<tr><td colspan="5" class="muted">Henüz tarama yok</td></tr>`;
+    const tr = await api("trades?limit=20");
+    $("trades").innerHTML = tr.length ? tr.map(t => `<tr><td>${esc(t.symbol)}</td><td>${esc(t.status)}</td><td>${num(t.entry_price,8)}</td><td>${num(t.exit_price,8)}</td><td class="${(t.pnl_usdt||0)>=0?"pos":"neg"}">${num(t.pnl_usdt,2)}</td><td>${num(t.fee_usdt,4)}</td><td>${esc(t.exit_reason||"")}</td><td>${esc((t.exit_time||t.entry_time||"").slice(0,16))}</td></tr>`).join("") : `<tr><td colspan="8" class="muted">İşlem yok</td></tr>`;
+    const lg = await api("logs?limit=30");
+    $("logs").innerHTML = lg.map(l => `<tr><td>${esc(l.time.slice(5,19))}</td><td>${esc(l.category)}</td><td style="white-space:normal">${esc(l.message)}</td></tr>`).join("");
+  } catch (e) {}
+}
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>
