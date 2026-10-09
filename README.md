@@ -170,8 +170,10 @@ net getiri hesaplanır. Hedef hareket maliyetin en az 3 katı değilse veya bekl
 - Her varlık için **HOLD / PARTIAL_SELL / SELL** kararı üretilir ve panelde gösterilir.
 - Mevcut coinler bot başladı diye **satılmaz**. Kararların uygulanması için LIVE modda
   `MANAGE_EXISTING_HOLDINGS=true` olmalı ve aynı karar art arda 3 taramada tekrarlanmalıdır.
-- Rotasyon yalnızca puan farkı **≥ 15** ise ve ek komisyon maliyetine rağmen beklenen avantaj
-  varsa yapılır; küçük farklarda gereksiz coin değişimi yapılmaz.
+- **Rotasyon varsayılan olarak KAPALI** (`ROTATION_ENABLED=false`). Canlı denemede geri çekilen
+  pozisyonları zararına satıp yeni yükselmiş coinlere geçerek 7 işlemde art arda küçük zarar üretti.
+  Açılırsa sıkı kurallarla çalışır: zarardaki pozisyon asla rotasyonla satılmaz (başa baş aktif ve
+  kârda olmalı), en az 4 saat tutulur, puan farkı ≥ 20, günde en fazla 1 rotasyon.
 
 ### Binance kuralları
 `exchangeInfo` üzerinden `LOT_SIZE`, `MARKET_LOT_SIZE`, `PRICE_FILTER`, `MIN_NOTIONAL` / `NOTIONAL`,

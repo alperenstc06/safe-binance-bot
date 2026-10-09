@@ -120,9 +120,13 @@ class Settings(BaseSettings):
     neutral_extra_score: float = 5.0
 
     # --- Portföy rotasyonu ---
-    rotation_enabled: bool = True
-    rotation_min_score_diff: float = 15.0
-    rotation_min_hold_minutes: int = 60
+    # Rotasyon varsayılan KAPALI: canlı sonuçlarda geri çekilmedeki pozisyonları zararına satıp
+    # yeni yükselmiş coinlere geçerek sürekli küçük zarar üretti. Açılırsa sıkı kurallarla çalışır.
+    rotation_enabled: bool = False
+    rotation_min_score_diff: float = 20.0
+    rotation_min_hold_minutes: int = 240
+    rotation_max_per_day: int = 1
+    rotation_require_profit: bool = True  # zarardaki pozisyon asla rotasyonla satılmaz
     manage_existing_holdings: bool = False
     holding_confirm_cycles: int = 3
     partial_sell_fraction: float = 0.5

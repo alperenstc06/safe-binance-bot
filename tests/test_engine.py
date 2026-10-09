@@ -236,7 +236,8 @@ def test_daily_stats_recorded():
 
 
 def test_rotation_requires_large_score_gap():
-    engine, fake, db = dry_engine(rotation_min_hold_minutes=0)
+    engine, fake, db = dry_engine(rotation_enabled=True, rotation_min_hold_minutes=0,
+                                  rotation_require_profit=False, rotation_min_score_diff=15)
     engine.run_cycle(force_scan=True)
     t = db.open_trades("DRY_RUN")[0]
     # Diğer aday benzer puanda -> rotasyon olmamalı
@@ -249,7 +250,8 @@ def test_rotation_requires_large_score_gap():
 
 
 def test_rotation_happens_on_large_score_gap():
-    engine, fake, db = dry_engine(rotation_min_hold_minutes=0)
+    engine, fake, db = dry_engine(rotation_enabled=True, rotation_min_hold_minutes=0,
+                                  rotation_require_profit=False, rotation_min_score_diff=15)
     engine.run_cycle(force_scan=True)
     t = db.open_trades("DRY_RUN")[0]
     other = "ETHUSDT" if t.symbol == "BTCUSDT" else "BTCUSDT"
@@ -400,3 +402,42 @@ def test_entry_stop_respects_recent_wick():
     t = db.open_trades("DRY_RUN")[0]
     atr = t.atr_at_entry
     assert t.entry_price - 3 * atr - 1e-9 <= t.initial_stop <= t.entry_price - 2 * atr + 1e-9
+
+
+
+def _setup_rotation_gap(**kw):
+    engine, fake, db = dry_engine(rotation_min_hold_minutes=0, rotation_min_score_diff=15, **kw)
+    engine.run_cycle(force_scan=True)
+    t = db.open_trades("DRY_RUN")[0]
+    fake.quote_volume[t.symbol] = 1e6  # tutulan coinin puanı düşer, diğer aday yüksek kalır
+    fake.spread[t.symbol] = 0.003
+    return engine, fake, db, t
+
+
+def test_rotation_disabled_by_default():
+    engine, fake, db, t = _setup_rotation_gap()
+    assert engine.s.rotation_enabled is False
+    engine.run_cycle(force_scan=True)
+    assert db.get_trade(t.id).status == "OPEN"
+
+
+def test_rotation_never_sells_losing_position():
+    engine, fake, db, t = _setup_rotation_gap(rotation_enabled=True)
+    engine.run_cycle(force_scan=True)  # pozisyon zararda/başa baş korumasız: rotasyon yok
+    assert db.get_trade(t.id).status == "OPEN"
+    assert not db.closed_trades_desc(mode="DRY_RUN")
+
+
+def test_rotation_in_profit_limited_to_one_per_day():
+    engine, fake, db, t = _setup_rotation_gap(rotation_enabled=True, partial_take_profit_enabled=False)
+    fake.override_price[t.symbol] = t.entry_price + 1.2 * t.current_atr  # kâr + başa baş aktif
+    engine.run_cycle(force_scan=True)
+    closed = db.get_trade(t.id)
+    assert closed.status == "CLOSED" and closed.exit_reason == "ROTATION" and closed.pnl_usdt > 0
+    new = db.open_trades("DRY_RUN")[0]
+    fake.quote_volume[new.symbol] = 1e6
+    fake.spread[new.symbol] = 0.003
+    fake.override_price[new.symbol] = new.entry_price + 1.2 * new.current_atr
+    engine.run_cycle(force_scan=True)
+    engine.run_cycle(force_scan=True)
+    assert db.get_trade(new.id).status == "OPEN"  # günde en fazla 1 rotasyon

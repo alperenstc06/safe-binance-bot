@@ -902,10 +902,16 @@ class BotEngine:
         min_score, _ = self._min_score()
         if best.score < min_score or (self.regime and not self.regime.allows_new_trades):
             return
+        if self.db.closed_since_by_reason(utc_day_start(now), "ROTATION", self.book) >= \
+                self.s.rotation_max_per_day:
+            return
         for t in self.db.open_trades(self.book):
             if t.symbol == best.symbol:
                 continue
             if now - t.entry_time < timedelta(minutes=self.s.rotation_min_hold_minutes):
+                continue
+            if self.s.rotation_require_profit and not (t.breakeven_active and self.unrealized_pnl(t) > 0):
+                # Zarardaki/başa baş korumasız pozisyon rotasyonla satılmaz; stop kuralları yönetir
                 continue
             try:
                 current = self._score_symbol(t.symbol, scan)

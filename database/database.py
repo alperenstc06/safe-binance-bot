@@ -145,6 +145,14 @@ class Database:
                 q = q.where(Trade.mode == mode)
             return int(s.scalar(q) or 0)
 
+    def closed_since_by_reason(self, since: datetime, reason: str, mode: str | None = None) -> int:
+        with self.session() as s:
+            q = select(func.count(Trade.id)).where(
+                Trade.status == "CLOSED", Trade.exit_time >= since, Trade.exit_reason == reason)
+            if mode:
+                q = q.where(Trade.mode == mode)
+            return int(s.scalar(q) or 0)
+
     def realized_pnl_since(self, since: datetime, mode: str | None = None) -> float:
         with self.session() as s:
             q = select(func.coalesce(func.sum(Trade.pnl_usdt), 0.0)).where(
